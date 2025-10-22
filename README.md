@@ -2,31 +2,15 @@
 
 A macOS menu bar app that shows your [Tilt](https://tilt.dev) resource status at a glance.
 
-<p align="center">
-  <img src="docs/tilt-logo.png" width="128" alt="Tilt Logo">
-</p>
-
 ## What it looks like
-
-> **📸 We'd love real screenshots!** If you're using TiltBar, please share screenshots of it in action by [opening an issue](https://github.com/seriousben/tilt-status-bar/issues) or submitting a PR. Show us your menu bar with different states, the menu dropdown, or anything else!
 
 **All resources healthy:**
 
-<img src="docs/tilt-logo.png" width="18"> ← Just the green Tilt logo in your menu bar
+![TiltBar with all resources ok](docs/screen-success.png)
 
-**Resources building/errors:**
+**Resources with warnings and errors:**
 
-<img src="docs/tilt-logo.png" width="18"> 🔴1 🟡1 ⚪️2 🟢3 ← Colored logo + colored number counts
-
-**Click the icon to open menu:**
-```
-┌─────────────────────────────────────┐
-│ Status: Connected - 28 ok           │
-├─────────────────────────────────────┤
-│ Open Tilt in Browser         ⌘O     │
-│ Quit                         ⌘Q     │
-└─────────────────────────────────────┘
-```
+![TiltBar with warnings and errors](docs/screen-error.png)
 
 ## Features
 
