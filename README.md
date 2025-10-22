@@ -101,10 +101,6 @@ That's it! The Tilt logo will appear in your menu bar.
 - Ensure Tilt is running: `tilt up`
 - Test CLI: `tilt get uiresource`
 
-**Updating icons (optional)**
-- Icons are bundled with the app
-- To update from a running Tilt instance: `make setup`
-
 ## Development
 
 See `Makefile` for all available commands. Key files:
@@ -112,6 +108,10 @@ See `Makefile` for all available commands. Key files:
 - `AppDelegate.swift` - Menu bar UI
 - `TiltClient.swift` - Streams from `tilt get uiresource -w`
 - `Models.swift` - Data structures
+
+**Updating icons:**
+- Icons are bundled with the app
+- To update from a running Tilt instance: `make setup`
 
 Code includes detailed comments explaining implementation.
 
