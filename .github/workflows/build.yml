@@ -1,0 +1,64 @@
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version string for the build (e.g., 1.0.0)'
+        required: false
+        type: string
+        default: 'dev'
+      upload_artifacts:
+        description: 'Whether to upload artifacts'
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      tarball_name:
+        description: 'Name of the tarball created'
+        value: ${{ jobs.build.outputs.tarball_name }}
+
+jobs:
+  build:
+    runs-on: macos-latest
+    outputs:
+      tarball_name: ${{ steps.set_output.outputs.tarball_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build release binary (arm64)
+        run: |
+          swift build -c release --arch arm64
+          mkdir -p dist
+          cp .build/arm64-apple-macosx/release/TiltBar dist/TiltBar-arm64
+
+      - name: Build release binary (x86_64)
+        run: |
+          swift build -c release --arch x86_64
+          cp .build/x86_64-apple-macosx/release/TiltBar dist/TiltBar-x86_64
+
+      - name: Create universal binary
+        run: |
+          lipo -create dist/TiltBar-arm64 dist/TiltBar-x86_64 -output dist/TiltBar
+          chmod +x dist/TiltBar
+
+      - name: Create tarball
+        run: |
+          tar -czf tiltbar-${{ inputs.version }}.tar.gz \
+            -C dist TiltBar \
+            -C ../Sources/TiltBar/Resources \
+            tilt-icon.png tilt-gray.png tilt-red.png \
+            tilt-icon.ico tilt-gray.ico tilt-red.ico
+
+      - name: Set output
+        id: set_output
+        run: echo "tarball_name=tiltbar-${{ inputs.version }}.tar.gz" >> $GITHUB_OUTPUT
+
+      - name: Upload build artifacts
+        if: ${{ inputs.upload_artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiltbar-${{ inputs.version }}
+          path: tiltbar-${{ inputs.version }}.tar.gz
+          retention-days: 7

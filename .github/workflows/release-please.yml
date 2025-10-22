@@ -30,30 +30,33 @@ jobs:
   build:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created }}
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.release-please.outputs.major }}.${{ needs.release-please.outputs.minor }}.${{ needs.release-please.outputs.patch }}
+      upload_artifacts: false
+
+  upload:
+    needs: [release-please, build]
     runs-on: macos-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build release binary (arm64)
+      - name: Rebuild tarball for upload
         run: |
+          VERSION="${{ needs.release-please.outputs.major }}.${{ needs.release-please.outputs.minor }}.${{ needs.release-please.outputs.patch }}"
+
+          # Build the binaries
           swift build -c release --arch arm64
           mkdir -p dist
           cp .build/arm64-apple-macosx/release/TiltBar dist/TiltBar-arm64
-
-      - name: Build release binary (x86_64)
-        run: |
           swift build -c release --arch x86_64
           cp .build/x86_64-apple-macosx/release/TiltBar dist/TiltBar-x86_64
-
-      - name: Create universal binary
-        run: |
           lipo -create dist/TiltBar-arm64 dist/TiltBar-x86_64 -output dist/TiltBar
           chmod +x dist/TiltBar
 
-      - name: Create tarball
-        run: |
-          tar -czf tiltbar-${{ needs.release-please.outputs.major }}.${{ needs.release-please.outputs.minor }}.${{ needs.release-please.outputs.patch }}.tar.gz \
+          # Create tarball
+          tar -czf tiltbar-${VERSION}.tar.gz \
             -C dist TiltBar \
             -C ../Sources/TiltBar/Resources \
             tilt-icon.png tilt-gray.png tilt-red.png \
@@ -63,8 +66,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ needs.release-please.outputs.tag_name }} \
-            tiltbar-${{ needs.release-please.outputs.major }}.${{ needs.release-please.outputs.minor }}.${{ needs.release-please.outputs.patch }}.tar.gz
+          VERSION="${{ needs.release-please.outputs.major }}.${{ needs.release-please.outputs.minor }}.${{ needs.release-please.outputs.patch }}"
+          gh release upload ${{ needs.release-please.outputs.tag_name }} tiltbar-${VERSION}.tar.gz
 
       - name: Update Homebrew tap
         env:
