@@ -76,7 +76,7 @@ The tap repository has been prepared at `../homebrew-tiltbar/`.
 cd ../homebrew-tiltbar
 
 # Get the SHA256 of the release tarball
-curl -sL https://github.com/seriousben/tilt-status-bar/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
+curl -sL https://github.com/seriousben/tiltbar/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
 
 # Edit Formula/tiltbar.rb and replace:
 # - REPLACE_WITH_ACTUAL_SHA256 with the actual SHA256

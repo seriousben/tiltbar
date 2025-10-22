@@ -76,7 +76,7 @@ jobs:
           VERSION="${{ needs.release-please.outputs.major }}.${{ needs.release-please.outputs.minor }}.${{ needs.release-please.outputs.patch }}"
 
           # Calculate SHA256 of the release tarball
-          SHA256=$(curl -sL https://github.com/seriousben/tilt-status-bar/archive/refs/tags/v${VERSION}.tar.gz | shasum -a 256 | cut -d' ' -f1)
+          SHA256=$(curl -sL https://github.com/seriousben/tiltbar/archive/refs/tags/v${VERSION}.tar.gz | shasum -a 256 | cut -d' ' -f1)
 
           # Clone the tap repository
           git clone https://x-access-token:${GITHUB_TOKEN}@github.com/seriousben/homebrew-tiltbar.git tap
