@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Bundle identifier - unique ID for this app -->
+    <key>CFBundleIdentifier</key>
+    <string>com.tilt.statusbar</string>
+
+    <!-- App name that appears in Activity Monitor, etc. -->
+    <key>CFBundleName</key>
+    <string>TiltStatusBar</string>
+
+    <!-- Display name (user-visible name) -->
+    <key>CFBundleDisplayName</key>
+    <string>Tilt Status Bar</string>
+
+    <!-- Bundle version -->
+    <key>CFBundleVersion</key>
+    <string>1.0.0</string>
+
+    <!-- Short version string -->
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+
+    <!-- Package type - APPL means application -->
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <!-- LSUIElement = YES makes this a "menu bar only" app
+         The app will:
+         - NOT appear in the Dock
+         - NOT appear in Cmd+Tab switcher
+         - ONLY show in the menu bar
+         This is perfect for status bar apps that don't need a main window -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- Minimum macOS version required -->
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+</dict>
+</plist>

@@ -1,0 +1,17 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+*.xcodeproj
+
+# macOS
+.DS_Store
+
+# Xcode
+xcuserdata/
+DerivedData/
+*.xcworkspace
+
+# Downloaded Tilt icons (can be regenerated from running Tilt instance)
+# Note: docs/tilt-logo.png is kept for README
+Sources/TiltStatusBar/Resources/*.ico
+Sources/TiltStatusBar/Resources/*.png
