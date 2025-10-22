@@ -31,6 +31,9 @@ class TiltClient {
     /// Current retry delay (increases exponentially up to maxRetryDelay)
     private var currentRetryDelay: TimeInterval
 
+    /// The time when the next retry will happen (nil if connected)
+    private(set) var nextRetryTime: Date?
+
     /// Task that's currently running the watch connection
     private var watchTask: Task<Void, Never>?
 
@@ -119,6 +122,7 @@ class TiltClient {
             // Wait before retrying (unless cancelled)
             if !Task.isCancelled {
                 print("Retrying in \(currentRetryDelay) seconds...")
+                nextRetryTime = Date().addingTimeInterval(currentRetryDelay)
                 try? await Task.sleep(for: .seconds(currentRetryDelay))
 
                 // Exponential backoff up to maxRetryDelay
@@ -146,9 +150,9 @@ class TiltClient {
         // Start the process
         try newProcess.run()
 
-        // Successfully started! Reset retry delay
-        currentRetryDelay = initialRetryDelay
-        updateConnectionState(.connected)
+        // Process started, but don't reset retry delay yet
+        // We'll only reset it when we successfully parse a resource (truly connected)
+        nextRetryTime = nil
 
         // Read output line by line
         // We use FileHandle's async bytes sequence to read data as it arrives
@@ -186,6 +190,14 @@ class TiltClient {
                 do {
                     let data = Data(jsonString.utf8)
                     let resource = try JSONDecoder().decode(UIResource.self, from: data)
+
+                    // Successfully parsed a resource! Now we're truly connected
+                    if connectionState != .connected {
+                        // Reset retry delay now that we're successfully connected
+                        currentRetryDelay = initialRetryDelay
+                        updateConnectionState(.connected)
+                    }
+
                     handleResourceUpdate(resource)
                 } catch {
                     print("Failed to parse UIResource: \(error)")

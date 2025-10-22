@@ -1,0 +1,69 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          # This should match your package name
+          package-name: tiltbar
+          # Release type for versioning strategy
+          release-type: simple
+
+      # Build and upload artifacts when a release is created
+      - name: Checkout code
+        if: ${{ steps.release.outputs.release_created }}
+        uses: actions/checkout@v4
+
+      - name: Setup Swift
+        if: ${{ steps.release.outputs.release_created }}
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '5.9'
+
+      - name: Build release binary (arm64)
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          swift build -c release --arch arm64
+          mkdir -p dist
+          cp .build/arm64-apple-macosx/release/TiltBar dist/TiltBar-arm64
+
+      - name: Build release binary (x86_64)
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          swift build -c release --arch x86_64
+          cp .build/x86_64-apple-macosx/release/TiltBar dist/TiltBar-x86_64
+
+      - name: Create universal binary
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          lipo -create dist/TiltBar-arm64 dist/TiltBar-x86_64 -output dist/TiltBar
+          chmod +x dist/TiltBar
+
+      - name: Create tarball
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          tar -czf tiltbar-${{ steps.release.outputs.major }}.${{ steps.release.outputs.minor }}.${{ steps.release.outputs.patch }}.tar.gz \
+            -C dist TiltBar \
+            -C ../Sources/TiltBar/Resources \
+            tilt-icon.png tilt-gray.png tilt-red.png \
+            tilt-icon.ico tilt-gray.ico tilt-red.ico
+
+      - name: Upload release artifacts
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ steps.release.outputs.tag_name }} \
+            tiltbar-${{ steps.release.outputs.major }}.${{ steps.release.outputs.minor }}.${{ steps.release.outputs.patch }}.tar.gz

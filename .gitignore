@@ -11,7 +11,5 @@ xcuserdata/
 DerivedData/
 *.xcworkspace
 
-# Downloaded Tilt icons (can be regenerated from running Tilt instance)
-# Note: docs/tilt-logo.png is kept for README
-Sources/TiltStatusBar/Resources/*.ico
-Sources/TiltStatusBar/Resources/*.png
+# Note: Tilt icons are now bundled in the repository for Homebrew distribution
+# docs/tilt-logo.png is kept for README

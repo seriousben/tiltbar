@@ -3,20 +3,26 @@
 
 .DEFAULT_GOAL := help
 
-# Setup: Download and convert Tilt icons from running Tilt instance (one-time setup)
+# Setup: Download and convert Tilt icons from running Tilt instance (optional)
+# Note: Fallback icons are bundled in the repository
+# Only needed if you want to update icons from a running Tilt instance
 # Requires: Tilt running on localhost:10350
 .PHONY: setup
 setup:
-	@echo "Downloading Tilt icons..."
+	@echo "Downloading Tilt icons from running Tilt instance..."
 	@mkdir -p Sources/TiltBar/Resources
-	@curl -s http://localhost:10350/static/ico/favicon-green.ico -o Sources/TiltBar/Resources/tilt-icon.ico
-	@curl -s http://localhost:10350/static/ico/favicon-gray.ico -o Sources/TiltBar/Resources/tilt-gray.ico
-	@curl -s http://localhost:10350/static/ico/favicon-red.ico -o Sources/TiltBar/Resources/tilt-red.ico
-	@echo "Converting icons to PNG..."
-	@sips -s format png Sources/TiltBar/Resources/tilt-icon.ico --out Sources/TiltBar/Resources/tilt-icon.png > /dev/null 2>&1
-	@sips -s format png Sources/TiltBar/Resources/tilt-gray.ico --out Sources/TiltBar/Resources/tilt-gray.png > /dev/null 2>&1
-	@sips -s format png Sources/TiltBar/Resources/tilt-red.ico --out Sources/TiltBar/Resources/tilt-red.png > /dev/null 2>&1
-	@echo "✓ Icons downloaded and converted"
+	@if curl -s -f http://localhost:10350/static/ico/favicon-green.ico -o Sources/TiltBar/Resources/tilt-icon.ico; then \
+		curl -s -f http://localhost:10350/static/ico/favicon-gray.ico -o Sources/TiltBar/Resources/tilt-gray.ico; \
+		curl -s -f http://localhost:10350/static/ico/favicon-red.ico -o Sources/TiltBar/Resources/tilt-red.ico; \
+		echo "Converting icons to PNG..."; \
+		sips -s format png Sources/TiltBar/Resources/tilt-icon.ico --out Sources/TiltBar/Resources/tilt-icon.png > /dev/null 2>&1; \
+		sips -s format png Sources/TiltBar/Resources/tilt-gray.ico --out Sources/TiltBar/Resources/tilt-gray.png > /dev/null 2>&1; \
+		sips -s format png Sources/TiltBar/Resources/tilt-red.ico --out Sources/TiltBar/Resources/tilt-red.png > /dev/null 2>&1; \
+		echo "✓ Icons downloaded and converted"; \
+	else \
+		echo "⚠ Could not connect to Tilt (http://localhost:10350)"; \
+		echo "  Using bundled fallback icons"; \
+	fi
 
 # Build: Compile in release mode (optimized binary)
 .PHONY: build
@@ -60,8 +66,9 @@ run-release: build
 help:
 	@echo "TiltBar - Available Commands"
 	@echo ""
-	@echo "Setup (first time):"
-	@echo "  make setup         Download Tilt icons from running Tilt instance"
+	@echo "Setup (optional):"
+	@echo "  make setup         Update icons from running Tilt instance"
+	@echo "                     (Fallback icons are already bundled)"
 	@echo ""
 	@echo "Build & Run:"
 	@echo "  make build         Build optimized release binary"
@@ -72,4 +79,4 @@ help:
 	@echo "  make clean         Remove build artifacts"
 	@echo "  make help          Show this help"
 	@echo ""
-	@echo "Quick start: make setup && make run"
+	@echo "Quick start: make run"

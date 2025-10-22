@@ -1,0 +1,17 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "tiltbar",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Bug Fixes"},
+        {"type": "perf", "section": "Performance Improvements"},
+        {"type": "docs", "section": "Documentation", "hidden": false},
+        {"type": "chore", "section": "Miscellaneous", "hidden": false}
+      ]
+    }
+  }
+}

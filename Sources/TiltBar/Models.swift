@@ -126,6 +126,23 @@ extension UIResource {
             return .unknown
         }
 
+        // Check updateStatus first (most authoritative)
+        if let updateStatus = status.updateStatus {
+            switch updateStatus {
+            case "error":
+                return .error
+            case "warning":
+                return .warning
+            case "in_progress", "pending":
+                return .inProgress
+            case "ok":
+                // Continue to check other fields
+                break
+            default:
+                break
+            }
+        }
+
         // If currently building, it's in progress
         if status.currentBuild != nil {
             return .inProgress
@@ -141,7 +158,21 @@ extension UIResource {
             }
         }
 
-        // Otherwise assume success if we have a runtime status
+        // Check runtime status for errors
+        if let runtimeStatus = status.runtimeStatus {
+            switch runtimeStatus {
+            case "error":
+                return .error
+            case "warning":
+                return .warning
+            case "pending":
+                return .inProgress
+            default:
+                break
+            }
+        }
+
+        // Otherwise assume success
         return .success
     }
 }

@@ -34,34 +34,40 @@ A macOS menu bar app that shows your [Tilt](https://tilt.dev) resource status at
 - 🔄 **Auto-reconnect** - Handles Tilt restarts automatically
 - 🚫 **Menu bar only** - No dock icon
 
-## Quick Start
+## Installation
 
-### Requirements
-
-- macOS 13.0+
-- [Tilt CLI](https://docs.tilt.dev/install.html) installed
-- Xcode Command Line Tools: `xcode-select --install`
-
-### Setup
+### Homebrew (Recommended)
 
 ```bash
-# Start Tilt in your project
-cd your-tilt-project
-tilt up
+brew install seriousben/tiltbar/tiltbar
+```
 
-# In another terminal, clone and setup this app
-git clone <repo-url>
-cd tiltbar
+Then start the app:
+```bash
+tiltbar
+```
 
-# Download Tilt icons and build
-make setup
-make build
+### From Source
 
-# Run the app
+**Requirements:**
+- macOS 13.0+
+- Xcode Command Line Tools: `xcode-select --install`
+
+```bash
+# Clone the repository
+git clone https://github.com/seriousben/tilt-status-bar.git
+cd tilt-status-bar
+
+# Build and run
 make run
 ```
 
 That's it! The Tilt logo will appear in your menu bar.
+
+## Requirements
+
+- macOS 13.0+
+- [Tilt CLI](https://docs.tilt.dev/install.html) installed and running
 
 ## Usage
 
@@ -84,8 +90,9 @@ That's it! The Tilt logo will appear in your menu bar.
 - Ensure Tilt is running: `tilt up`
 - Test CLI: `tilt get uiresource`
 
-**"No icons"**
-- Run `make setup` to download icons from Tilt
+**Updating icons (optional)**
+- Icons are bundled with the app
+- To update from a running Tilt instance: `make setup`
 
 ## Development
 
@@ -96,6 +103,23 @@ See `Makefile` for all available commands. Key files:
 - `Models.swift` - Data structures
 
 Code includes detailed comments explaining implementation.
+
+## Contributing
+
+This project uses [Conventional Commits](https://www.conventionalcommits.org/) and [Release Please](https://github.com/googleapis/release-please) for automated versioning and releases.
+
+**Commit message format:**
+- `feat:` - New features (triggers minor version bump)
+- `fix:` - Bug fixes (triggers patch version bump)
+- `docs:` - Documentation changes
+- `chore:` - Maintenance tasks
+
+**Example:**
+```bash
+git commit -m "feat: add keyboard shortcut to toggle menu"
+```
+
+Releases are created automatically when PRs are merged to `main`.
 
 ## License
 

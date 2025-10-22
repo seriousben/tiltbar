@@ -15,9 +15,11 @@ import Cocoa
 /// ## Menu Items:
 /// - Status display (read-only)
 /// - Open Tilt in Browser
+/// - View on GitHub
 /// - Reconnect Now (hidden when connected)
+/// - Development Mode (hidden unless Option key is held)
 /// - Quit
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Properties
 
     /// The status bar item that appears in the menu bar
@@ -37,9 +39,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var grayIcon: NSImage?
     private var greenIcon: NSImage?
     private var redIcon: NSImage?
+    private var yellowIcon: NSImage?
 
     /// Track the currently displayed icon to avoid animating when unchanged
     private var currentIcon: NSImage?
+
+    // MARK: - Development Mode
+
+    /// Development mode state
+    private var developmentMode: DevelopmentMode = .live
+
+    /// Timer for cycling through states in Cycle All States mode
+    private var cycleTimer: Timer?
+
+    /// Current index in the cycle sequence
+    private var cycleIndex: Int = 0
+
+    /// Timer for updating the retry countdown in the menu
+    private var menuUpdateTimer: Timer?
+
+    /// Simulated next retry time for dev mode
+    private var devModeNextRetryTime: Date?
+
+    /// Last displayed countdown value (to avoid flickering updates)
+    private var lastDisplayedCountdown: Int?
+
+    /// Available development mode test states
+    private enum DevelopmentMode {
+        case live
+        case allSuccess
+        case withWarnings
+        case withErrors
+        case inProgress
+        case disconnected
+        case cycleAllStates
+    }
 
     // MARK: - Application Lifecycle
 
@@ -54,9 +88,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Set up the status bar button
         if let button = statusItem?.button {
-            // Set initial icon and text
+            // Set initial icon (gray, no text for connecting state)
             button.image = grayIcon
-            button.title = " Starting..."
+            currentIcon = grayIcon  // Track the initial icon
+            button.attributedTitle = NSAttributedString(string: "")
         }
 
         // Create and set the menu
@@ -92,16 +127,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         greenIcon = NSImage(contentsOfFile: greenPath)
         redIcon = NSImage(contentsOfFile: redPath)
 
+        // Create yellow icon by tinting the green icon
+        if let green = greenIcon {
+            yellowIcon = tintImage(green, with: NSColor.yellow)
+        }
+
         // Set images to template rendering mode for better menu bar integration
         grayIcon?.isTemplate = false  // Keep colors
         greenIcon?.isTemplate = false
         redIcon?.isTemplate = false
+        yellowIcon?.isTemplate = false
 
         // Resize icons to fit menu bar (typically 16x16 or 18x18)
         let iconSize = NSSize(width: 18, height: 18)
         grayIcon?.size = iconSize
         greenIcon?.size = iconSize
         redIcon?.size = iconSize
+        yellowIcon?.size = iconSize
+    }
+
+    /// Tint an image with a specific color
+    private func tintImage(_ image: NSImage, with color: NSColor) -> NSImage {
+        let tinted = NSImage(size: image.size)
+        tinted.lockFocus()
+
+        // Draw the original image
+        image.draw(at: .zero, from: NSRect(origin: .zero, size: image.size), operation: .sourceOver, fraction: 1.0)
+
+        // Apply color tint with multiply blend mode
+        color.set()
+        NSRect(origin: .zero, size: image.size).fill(using: .sourceAtop)
+
+        tinted.unlockFocus()
+        return tinted
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -135,6 +193,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         openMenuItem.target = self
         menu.addItem(openMenuItem)
 
+        // View on GitHub
+        let githubMenuItem = NSMenuItem(
+            title: "View on GitHub",
+            action: #selector(openGitHub),
+            keyEquivalent: "g"
+        )
+        githubMenuItem.target = self
+        menu.addItem(githubMenuItem)
+
         // Reconnect Now
         let reconnectMenuItem = NSMenuItem(
             title: "Reconnect Now",
@@ -147,6 +214,96 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Development Mode submenu (hidden by default, shown when Option key is held)
+        let devModeMenuItem = NSMenuItem(
+            title: "Development Mode",
+            action: nil,
+            keyEquivalent: ""
+        )
+        devModeMenuItem.tag = 200 // Tag to find it later for hiding/showing
+
+        let devModeSubmenu = NSMenu()
+
+        // All Success
+        let allSuccessItem = NSMenuItem(
+            title: "All Success",
+            action: #selector(setDevModeAllSuccess),
+            keyEquivalent: ""
+        )
+        allSuccessItem.target = self
+        allSuccessItem.tag = 201
+        devModeSubmenu.addItem(allSuccessItem)
+
+        // With Warnings
+        let withWarningsItem = NSMenuItem(
+            title: "With Warnings",
+            action: #selector(setDevModeWithWarnings),
+            keyEquivalent: ""
+        )
+        withWarningsItem.target = self
+        withWarningsItem.tag = 202
+        devModeSubmenu.addItem(withWarningsItem)
+
+        // With Errors
+        let withErrorsItem = NSMenuItem(
+            title: "With Errors",
+            action: #selector(setDevModeWithErrors),
+            keyEquivalent: ""
+        )
+        withErrorsItem.target = self
+        withErrorsItem.tag = 203
+        devModeSubmenu.addItem(withErrorsItem)
+
+        // In Progress
+        let inProgressItem = NSMenuItem(
+            title: "In Progress",
+            action: #selector(setDevModeInProgress),
+            keyEquivalent: ""
+        )
+        inProgressItem.target = self
+        inProgressItem.tag = 204
+        devModeSubmenu.addItem(inProgressItem)
+
+        // Disconnected
+        let disconnectedItem = NSMenuItem(
+            title: "Disconnected",
+            action: #selector(setDevModeDisconnected),
+            keyEquivalent: ""
+        )
+        disconnectedItem.target = self
+        disconnectedItem.tag = 205
+        devModeSubmenu.addItem(disconnectedItem)
+
+        devModeSubmenu.addItem(NSMenuItem.separator())
+
+        // Cycle All States
+        let cycleStatesItem = NSMenuItem(
+            title: "Cycle All States",
+            action: #selector(setDevModeCycleAllStates),
+            keyEquivalent: ""
+        )
+        cycleStatesItem.target = self
+        cycleStatesItem.tag = 206
+        devModeSubmenu.addItem(cycleStatesItem)
+
+        devModeSubmenu.addItem(NSMenuItem.separator())
+
+        // Return to Live Mode
+        let liveItem = NSMenuItem(
+            title: "Return to Live Mode",
+            action: #selector(setDevModeLive),
+            keyEquivalent: ""
+        )
+        liveItem.target = self
+        liveItem.tag = 207
+        devModeSubmenu.addItem(liveItem)
+
+        devModeMenuItem.submenu = devModeSubmenu
+        devModeMenuItem.isHidden = true // Hidden by default
+        menu.addItem(devModeMenuItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // Quit
         let quitMenuItem = NSMenuItem(
             title: "Quit",
@@ -156,19 +313,95 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         quitMenuItem.target = self
         menu.addItem(quitMenuItem)
 
+        menu.delegate = self
         statusItem?.menu = menu
+    }
+
+    // MARK: - NSMenuDelegate
+
+    func menuWillOpen(_ menu: NSMenu) {
+        // Show/hide development mode menu based on Option key
+        if let devModeMenuItem = menu.item(withTag: 200) {
+            let optionKeyPressed = NSEvent.modifierFlags.contains(.option)
+            devModeMenuItem.isHidden = !optionKeyPressed
+        }
+
+        // Update checkmarks for development mode items
+        updateDevModeCheckmarks(menu)
+
+        // Reset the last displayed countdown to force initial update
+        lastDisplayedCountdown = nil
+
+        // Start timer to update retry countdown every second while menu is open
+        menuUpdateTimer?.invalidate()
+        menuUpdateTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.updateMenuStatus()
+        }
+        // Update immediately
+        updateMenuStatus()
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        // Stop the update timer when menu closes
+        menuUpdateTimer?.invalidate()
+        menuUpdateTimer = nil
+        lastDisplayedCountdown = nil
+    }
+
+    private func updateDevModeCheckmarks(_ menu: NSMenu) {
+        // Find the development mode submenu
+        guard let devModeMenuItem = menu.item(withTag: 200),
+              let devModeSubmenu = devModeMenuItem.submenu else {
+            return
+        }
+
+        // Clear all checkmarks first
+        for tag in 201...207 {
+            if let item = devModeSubmenu.item(withTag: tag) {
+                item.state = .off
+            }
+        }
+
+        // Set checkmark for current mode
+        let currentTag: Int
+        switch developmentMode {
+        case .live:
+            currentTag = 207
+        case .allSuccess:
+            currentTag = 201
+        case .withWarnings:
+            currentTag = 202
+        case .withErrors:
+            currentTag = 203
+        case .inProgress:
+            currentTag = 204
+        case .disconnected:
+            currentTag = 205
+        case .cycleAllStates:
+            currentTag = 206
+        }
+
+        if let item = devModeSubmenu.item(withTag: currentTag) {
+            item.state = .on
+        }
     }
 
     // MARK: - Status Updates
 
     private func handleStatusUpdate(_ status: ResourceStatus) {
-        currentStatus = status
-        updateDisplay()
+        // Ignore live updates when in development mode
+        if developmentMode == .live {
+            currentStatus = status
+            updateDisplay()
+        }
     }
 
     private func handleConnectionStateChange(_ state: ConnectionState) {
-        currentConnectionState = state
-        updateDisplay()
+        // Ignore live updates when in development mode
+        if developmentMode == .live {
+            currentConnectionState = state
+            updateDisplay()
+        }
     }
 
     /// Animates the icon transition with a smooth fade effect
@@ -203,9 +436,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let newIcon = chooseIcon()
             setIconWithAnimation(newIcon, button: button)
 
-            // Set the title text
-            let text = buildStatusBarText()
-            button.title = text.isEmpty ? "" : " \(text)"  // Add space before text for padding
+            // Set the title text with colors
+            let attributedText = buildStatusBarAttributedText()
+            if attributedText.length > 0 {
+                button.attributedTitle = attributedText
+            } else {
+                button.attributedTitle = NSAttributedString(string: "")
+            }
         }
 
         // Update the status menu item
@@ -223,71 +460,103 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Choose the appropriate Tilt icon based on current status
+    /// Gray logo: if not connected (disconnected, connecting, server down)
     /// Red logo: if errors > 0
-    /// Yellow/orange logo: if warnings > 0 but no errors (use gray as proxy for yellow)
-    /// Green logo: otherwise (all success)
+    /// Yellow logo: if warnings > 0 but no errors
+    /// Green logo: otherwise (all success, when connected)
     private func chooseIcon() -> NSImage? {
-        // If not connected, show gray icon
+        // ALWAYS check connection state first - if not connected, MUST be gray
         if currentConnectionState != .connected {
             return grayIcon
         }
 
+        // Only when connected do we check resource status for colors
         // If there are errors, show red logo
         if currentStatus.error > 0 {
             return redIcon
         }
 
-        // If there are warnings (but no errors), show gray logo (as proxy for yellow/orange)
+        // If there are warnings (but no errors), show yellow logo
         if currentStatus.warning > 0 {
-            return grayIcon
+            return yellowIcon
         }
 
-        // Everything is green!
+        // Everything is green (only when connected and no errors/warnings)
         return greenIcon
     }
 
-    /// Build the text to show in the status bar
-    /// Format: [red_count/][yellow_count/]green_count/total
-    /// Red and yellow counts are hidden if zero
-    private func buildStatusBarText() -> String {
+    /// Build the attributed text to show in the status bar with colored numbers
+    /// Format: red yellow inprogress green (only showing counts > 0)
+    /// Only shows numbers, never any text labels
+    private func buildStatusBarAttributedText() -> NSAttributedString {
+        let result = NSMutableAttributedString()
+
+        // Add leading space for padding
+        result.append(NSAttributedString(string: " "))
+
         switch currentConnectionState {
-        case .disconnected:
-            return "Disconnected"
-        case .connecting:
-            return "Connecting..."
-        case .serverDown:
-            return "Server Down"
+        case .disconnected, .connecting, .serverDown:
+            // All non-connected states: just show gray icon, no text/numbers
+            return NSAttributedString(string: "")
         case .connected:
             // If everything is green/successful, show no text (just icon)
             if currentStatus.error == 0 && currentStatus.warning == 0 && currentStatus.inProgress == 0 && currentStatus.success > 0 {
-                return ""
+                return NSAttributedString(string: "")
             }
 
+            // If no resources, still just show icon (no text)
             if currentStatus.total == 0 {
-                return "No Resources"
+                return NSAttributedString(string: "")
             }
 
-            // Build format: [red/][yellow/]green/total
-            // Use NSAttributedString for colored text
-            var parts: [String] = []
+            // Build format with colored numbers
+            var parts: [NSAttributedString] = []
 
             // Red count (errors) - only show if > 0
             if currentStatus.error > 0 {
-                parts.append("\(currentStatus.error)")
+                let errorText = NSAttributedString(
+                    string: "\(currentStatus.error)",
+                    attributes: [.foregroundColor: NSColor.red]
+                )
+                parts.append(errorText)
             }
 
             // Yellow count (warnings) - only show if > 0
             if currentStatus.warning > 0 {
-                parts.append("\(currentStatus.warning)")
+                let warningText = NSAttributedString(
+                    string: "\(currentStatus.warning)",
+                    attributes: [.foregroundColor: NSColor.yellow]
+                )
+                parts.append(warningText)
             }
 
-            // Green count (success)
-            parts.append("\(currentStatus.success)")
+            // Gray count (in progress) - only show if > 0
+            if currentStatus.inProgress > 0 {
+                let inProgressText = NSAttributedString(
+                    string: "\(currentStatus.inProgress)",
+                    attributes: [.foregroundColor: NSColor.gray]
+                )
+                parts.append(inProgressText)
+            }
 
-            // Total count
-            parts.append("\(currentStatus.total)")
+            // Green count (success) - always show when connected with resources
+            if currentStatus.success > 0 {
+                let successText = NSAttributedString(
+                    string: "\(currentStatus.success)",
+                    attributes: [.foregroundColor: NSColor.green]
+                )
+                parts.append(successText)
+            }
 
-            return parts.joined(separator: "/")
+            // Join parts with spaces
+            for (index, part) in parts.enumerated() {
+                if index > 0 {
+                    result.append(NSAttributedString(string: " "))
+                }
+                result.append(part)
+            }
+
+            return result
         }
     }
 
@@ -298,7 +567,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if currentConnectionState == .connected {
             return "Status: \(connectionText) - \(currentStatus.summary)"
         } else {
-            return "Status: \(connectionText)"
+            // Show retry countdown for disconnected states
+            let nextRetry = developmentMode == .live ? tiltClient.nextRetryTime : devModeNextRetryTime
+            if let nextRetry = nextRetry {
+                let secondsUntilRetry = max(0, Int(nextRetry.timeIntervalSinceNow))
+                return "Status: \(connectionText) - Retry in \(secondsUntilRetry)s"
+            } else {
+                return "Status: \(connectionText)"
+            }
+        }
+    }
+
+    /// Update the status menu item (called by timer when menu is open)
+    private func updateMenuStatus() {
+        // In dev mode disconnected state, simulate retry countdown resetting
+        if developmentMode == .disconnected {
+            if let nextRetry = devModeNextRetryTime {
+                if nextRetry.timeIntervalSinceNow <= 0 {
+                    // Reset the countdown to 15 seconds
+                    devModeNextRetryTime = Date().addingTimeInterval(15)
+                }
+            } else {
+                // Initialize if somehow nil
+                devModeNextRetryTime = Date().addingTimeInterval(15)
+            }
+        }
+
+        // Get the current countdown value
+        let nextRetry = developmentMode == .live ? tiltClient.nextRetryTime : devModeNextRetryTime
+        let currentCountdown = nextRetry.map { max(0, Int($0.timeIntervalSinceNow)) }
+
+        // Only update if the countdown value has changed (reduces flickering)
+        if currentCountdown != lastDisplayedCountdown {
+            lastDisplayedCountdown = currentCountdown
+            if let menu = statusItem?.menu,
+               let statusMenuItem = menu.item(withTag: 100) {
+                statusMenuItem.title = buildStatusText()
+            }
         }
     }
 
@@ -311,6 +616,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func openGitHub() {
+        // Open the GitHub project page
+        if let url = URL(string: "https://github.com/seriousben/tiltbar") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     @objc private func reconnectNow() {
         tiltClient.reconnectNow()
     }
@@ -318,4 +630,161 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quit() {
         NSApplication.shared.terminate(nil)
     }
+
+    // MARK: - Development Mode Actions
+
+    @objc private func setDevModeAllSuccess() {
+        setDevelopmentMode(.allSuccess)
+    }
+
+    @objc private func setDevModeWithWarnings() {
+        setDevelopmentMode(.withWarnings)
+    }
+
+    @objc private func setDevModeWithErrors() {
+        setDevelopmentMode(.withErrors)
+    }
+
+    @objc private func setDevModeInProgress() {
+        setDevelopmentMode(.inProgress)
+    }
+
+    @objc private func setDevModeDisconnected() {
+        setDevelopmentMode(.disconnected)
+    }
+
+    @objc private func setDevModeCycleAllStates() {
+        setDevelopmentMode(.cycleAllStates)
+    }
+
+    @objc private func setDevModeLive() {
+        setDevelopmentMode(.live)
+    }
+
+    private func setDevelopmentMode(_ mode: DevelopmentMode) {
+        // Stop any existing cycle timer
+        cycleTimer?.invalidate()
+        cycleTimer = nil
+        cycleIndex = 0
+
+        developmentMode = mode
+
+        // Apply the test data immediately
+        applyDevelopmentModeData()
+
+        // Start cycle timer if in cycle mode
+        if mode == .cycleAllStates {
+            startCycleTimer()
+        }
+    }
+
+    private func applyDevelopmentModeData() {
+        switch developmentMode {
+        case .live:
+            // Return to live mode - clear dev mode state and let TiltClient handle everything
+            devModeNextRetryTime = nil  // Clear dev mode retry time
+            // Don't manually set currentConnectionState or currentStatus here
+            // Let the TiltClient's callbacks handle it via handleStatusUpdate/handleConnectionStateChange
+            tiltClient.reconnectNow()
+            // The reconnectNow will trigger connection state updates through the normal callbacks
+            break
+
+        case .allSuccess:
+            devModeNextRetryTime = nil
+            currentStatus = ResourceStatus(
+                inProgress: 0,
+                success: 5,
+                warning: 0,
+                error: 0
+            )
+            currentConnectionState = .connected
+            updateDisplay()
+
+        case .withWarnings:
+            devModeNextRetryTime = nil
+            currentStatus = ResourceStatus(
+                inProgress: 0,
+                success: 3,
+                warning: 2,
+                error: 0
+            )
+            currentConnectionState = .connected
+            updateDisplay()
+
+        case .withErrors:
+            devModeNextRetryTime = nil
+            currentStatus = ResourceStatus(
+                inProgress: 0,
+                success: 3,
+                warning: 1,
+                error: 1
+            )
+            currentConnectionState = .connected
+            updateDisplay()
+
+        case .inProgress:
+            devModeNextRetryTime = nil
+            currentStatus = ResourceStatus(
+                inProgress: 2,
+                success: 3,
+                warning: 0,
+                error: 0
+            )
+            currentConnectionState = .connected
+            updateDisplay()
+
+        case .disconnected:
+            currentStatus = ResourceStatus(
+                inProgress: 0,
+                success: 0,
+                warning: 0,
+                error: 0
+            )
+            currentConnectionState = .disconnected
+            // Simulate a retry countdown (15 seconds)
+            devModeNextRetryTime = Date().addingTimeInterval(15)
+            updateDisplay()
+
+        case .cycleAllStates:
+            devModeNextRetryTime = nil
+            // Initial state will be set by the timer
+            cycleThroughStates()
+        }
+    }
+
+    private func startCycleTimer() {
+        // Cycle through states every 2.5 seconds
+        cycleTimer = Timer.scheduledTimer(
+            withTimeInterval: 2.5,
+            repeats: true
+        ) { [weak self] _ in
+            self?.cycleThroughStates()
+        }
+    }
+
+    private func cycleThroughStates() {
+        // Define the sequence of states to cycle through
+        let states: [(ResourceStatus, ConnectionState)] = [
+            // All Success
+            (ResourceStatus(inProgress: 0, success: 5, warning: 0, error: 0), .connected),
+            // In Progress
+            (ResourceStatus(inProgress: 2, success: 3, warning: 0, error: 0), .connected),
+            // With Warnings
+            (ResourceStatus(inProgress: 0, success: 3, warning: 2, error: 0), .connected),
+            // With Errors
+            (ResourceStatus(inProgress: 0, success: 3, warning: 1, error: 1), .connected),
+            // Disconnected
+            (ResourceStatus(inProgress: 0, success: 0, warning: 0, error: 0), .disconnected)
+        ]
+
+        // Get the current state
+        let (status, connectionState) = states[cycleIndex]
+        currentStatus = status
+        currentConnectionState = connectionState
+        updateDisplay()
+
+        // Move to next state
+        cycleIndex = (cycleIndex + 1) % states.count
+    }
 }
+
