@@ -8,13 +8,15 @@ A macOS menu bar app that shows your [Tilt](https://tilt.dev) resource status at
 
 ## What it looks like
 
+> **📸 We'd love real screenshots!** If you're using TiltBar, please share screenshots of it in action by [opening an issue](https://github.com/seriousben/tilt-status-bar/issues) or submitting a PR. Show us your menu bar with different states, the menu dropdown, or anything else!
+
 **All resources healthy:**
 
 <img src="docs/tilt-logo.png" width="18"> ← Just the green Tilt logo in your menu bar
 
 **Resources building/errors:**
 
-<img src="docs/tilt-logo.png" width="18"> ⚪️2 🟢5 🔴1 ← Gray/red logo + status counts
+<img src="docs/tilt-logo.png" width="18"> 🔴1 🟡1 ⚪️2 🟢3 ← Colored logo + colored number counts
 
 **Click the icon to open menu:**
 ```
@@ -42,10 +44,19 @@ A macOS menu bar app that shows your [Tilt](https://tilt.dev) resource status at
 brew install seriousben/tiltbar/tiltbar
 ```
 
-Then start the app:
+**Launch the app:**
+
+To make it visible in Spotlight/Alfred/Launchpad, copy it to Applications:
 ```bash
-tiltbar
+cp -r /opt/homebrew/opt/tiltbar/TiltBar.app ~/Applications/
 ```
+
+Or launch it directly:
+```bash
+open /opt/homebrew/opt/tiltbar/TiltBar.app
+```
+
+> **Note:** The copy-to-Applications step is temporary while we prepare a Homebrew cask.
 
 ### From Source
 
@@ -73,7 +84,7 @@ That's it! The Tilt logo will appear in your menu bar.
 
 **Status Display:**
 - 🟢 Green logo only = All resources healthy
-- Icon + counts = Issues present (e.g., "⚪️2 🟢5 🔴1")
+- Icon + colored numbers = Issues present (e.g., "🔴1 🟡1 ⚪️2 🟢3")
 
 **Menu:**
 - Open Tilt in Browser
