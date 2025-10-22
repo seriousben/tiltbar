@@ -104,26 +104,17 @@ tiltbar
 
 ## Subsequent Releases
 
-Once set up, releasing new versions is automatic:
+Once set up, releasing new versions is fully automated:
 
 1. Make commits with conventional commit messages
 2. Release Please accumulates changes in a release PR
 3. Merge the release PR
-4. GitHub Actions builds and releases automatically
-5. Update Homebrew formula:
-   ```bash
-   cd ../homebrew-tiltbar
+4. GitHub Actions automatically:
+   - Builds and uploads release artifacts
+   - Updates the Homebrew formula with new version and SHA256
+   - Commits and pushes to homebrew-tiltbar repository
 
-   # Get new version SHA256
-   VERSION=0.2.0  # Update this
-   curl -sL https://github.com/seriousben/tilt-status-bar/archive/refs/tags/v${VERSION}.tar.gz | shasum -a 256
-
-   # Update Formula/tiltbar.rb with new version and SHA256
-   # Commit and push
-   git add Formula/tiltbar.rb
-   git commit -m "feat: update tiltbar to v${VERSION}"
-   git push
-   ```
+No manual intervention needed!
 
 ## Troubleshooting
 
@@ -138,6 +129,13 @@ Once set up, releasing new versions is automatic:
 - Check that Swift version in workflow matches Package.swift
 - Verify paths in workflow are correct
 - Ensure icons exist in Sources/TiltBar/Resources/
+
+### Tap update failing
+
+- Verify `TAP_GITHUB_TOKEN` secret is set correctly
+- Ensure the token has `repo` scope
+- Check GitHub Actions logs in the release workflow
+- Verify homebrew-tiltbar repository exists and is accessible
 
 ### Homebrew install failing
 

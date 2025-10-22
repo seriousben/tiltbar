@@ -67,3 +67,29 @@ jobs:
         run: |
           gh release upload ${{ steps.release.outputs.tag_name }} \
             tiltbar-${{ steps.release.outputs.major }}.${{ steps.release.outputs.minor }}.${{ steps.release.outputs.patch }}.tar.gz
+
+      - name: Update Homebrew tap
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.release.outputs.major }}.${{ steps.release.outputs.minor }}.${{ steps.release.outputs.patch }}"
+
+          # Calculate SHA256 of the release tarball
+          SHA256=$(curl -sL https://github.com/seriousben/tilt-status-bar/archive/refs/tags/v${VERSION}.tar.gz | shasum -a 256 | cut -d' ' -f1)
+
+          # Clone the tap repository
+          git clone https://x-access-token:${GITHUB_TOKEN}@github.com/seriousben/homebrew-tiltbar.git tap
+          cd tap
+
+          # Update the formula
+          sed -i.bak "s|archive/refs/tags/v[0-9]*\.[0-9]*\.[0-9]*\.tar\.gz|archive/refs/tags/v${VERSION}.tar.gz|g" Formula/tiltbar.rb
+          sed -i.bak "s|sha256 \".*\"|sha256 \"${SHA256}\"|g" Formula/tiltbar.rb
+          rm Formula/tiltbar.rb.bak
+
+          # Commit and push if there are changes
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/tiltbar.rb
+          git commit -m "feat: update tiltbar to v${VERSION}" || exit 0
+          git push
