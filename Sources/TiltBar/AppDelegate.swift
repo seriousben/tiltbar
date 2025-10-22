@@ -112,11 +112,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Load Tilt icons from the Resources directory
     private func loadIcons() {
-        // Get the path to the Resources directory
-        // Since we're using Process, we need to find the Resources relative to the executable
+        // Determine the Resources directory path
+        // For .app bundles: Use Bundle.main.resourcePath (Contents/Resources)
+        // For local builds: Look for Resources next to the executable
+        let resourcesPath: String
+
+        // Check if we're running from a .app bundle by looking for Info.plist
         let executablePath = Bundle.main.executablePath ?? ""
         let executableDir = (executablePath as NSString).deletingLastPathComponent
-        let resourcesPath = (executableDir as NSString).appendingPathComponent("Resources")
+        let contentsDir = (executableDir as NSString).deletingLastPathComponent
+        let bundlePath = (contentsDir as NSString).deletingLastPathComponent
+        let infoPlistPath = ((bundlePath as NSString).appendingPathComponent("Contents") as NSString).appendingPathComponent("Info.plist")
+
+        if FileManager.default.fileExists(atPath: infoPlistPath), let bundleResourcePath = Bundle.main.resourcePath {
+            // Running from .app bundle - use Bundle's resource path
+            resourcesPath = bundleResourcePath
+        } else {
+            // Running from local build - look for Resources next to executable
+            resourcesPath = (executableDir as NSString).appendingPathComponent("Resources")
+        }
 
         // Try to load icons from the Resources directory
         let grayPath = (resourcesPath as NSString).appendingPathComponent("tilt-gray.png")
