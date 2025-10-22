@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/seriousben/tiltbar/compare/v1.1.0...v1.1.1) (2025-10-22)
+
+
+### Bug Fixes
+
+* show icon on local and installed builds ([bfa8d0c](https://github.com/seriousben/tiltbar/commit/bfa8d0c8214e8524666a1ba06de0c70cb409a55e))
+
 ## [1.1.0](https://github.com/seriousben/tiltbar/compare/v1.0.0...v1.1.0) (2025-10-22)
 
 
