@@ -35,6 +35,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Current connection state
     private var currentConnectionState: ConnectionState = .disconnected
 
+    /// Current list of recent failures
+    private var currentFailures: [FailureInfo] = []
+
+    /// Current list of in-progress resources
+    private var currentInProgress: [InProgressInfo] = []
+
     /// Cached Tilt icons
     private var grayIcon: NSImage?
     private var greenIcon: NSImage?
@@ -104,6 +110,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         tiltClient.onConnectionStateChange = { [weak self] state in
             self?.handleConnectionStateChange(state)
+        }
+
+        tiltClient.onFailuresUpdate = { [weak self] failures in
+            self?.handleFailuresUpdate(failures)
+        }
+
+        tiltClient.onInProgressUpdate = { [weak self] inProgress in
+            self?.handleInProgressUpdate(inProgress)
         }
 
         // Start watching Tilt
@@ -195,6 +209,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusMenuItem.isEnabled = false
         statusMenuItem.tag = 100 // Tag to find it later
         menu.addItem(statusMenuItem)
+
+        // In Progress section (populated dynamically)
+        // Tag 103 marks the start of the in-progress section
+        let inProgressSectionStart = NSMenuItem.separator()
+        inProgressSectionStart.tag = 103
+        inProgressSectionStart.isHidden = true // Initially hidden, shown when in-progress resources exist
+        menu.addItem(inProgressSectionStart)
+
+        // Recent Failures section (populated dynamically)
+        // Tag 102 marks the start of the failures section
+        let failuresSectionStart = NSMenuItem.separator()
+        failuresSectionStart.tag = 102
+        failuresSectionStart.isHidden = true // Initially hidden, shown when failures exist
+        menu.addItem(failuresSectionStart)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -418,6 +446,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private func handleFailuresUpdate(_ failures: [FailureInfo]) {
+        // Ignore live updates when in development mode
+        if developmentMode == .live {
+            currentFailures = failures
+            updateFailuresInMenu()
+        }
+    }
+
+    private func handleInProgressUpdate(_ inProgress: [InProgressInfo]) {
+        // Ignore live updates when in development mode
+        if developmentMode == .live {
+            currentInProgress = inProgress
+            updateInProgressInMenu()
+        }
+    }
+
     /// Animates the icon transition with a smooth fade effect
     private func setIconWithAnimation(_ newIcon: NSImage?, button: NSStatusBarButton) {
         // Skip animation if icon hasn't changed
@@ -621,6 +665,116 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Update the In Progress section in the menu
+    private func updateInProgressInMenu() {
+        guard let menu = statusItem?.menu else { return }
+
+        // Find the in-progress section separator (tag 103)
+        guard let inProgressSectionIndex = menu.items.firstIndex(where: { $0.tag == 103 }) else {
+            return
+        }
+
+        // Remove any existing in-progress items
+        let indexToRemove = inProgressSectionIndex + 1
+        while indexToRemove < menu.items.count {
+            let item = menu.items[indexToRemove]
+            // Stop when we hit the next separator or a tagged item (start of next section)
+            if item.isSeparatorItem || (item.tag > 0 && item.tag != 103) {
+                break
+            }
+            menu.removeItem(at: indexToRemove)
+        }
+
+        // If we have in-progress resources, show the section and add items
+        if !currentInProgress.isEmpty {
+            // Show the separator
+            if let separator = menu.item(withTag: 103) {
+                separator.isHidden = false
+            }
+
+            // Add "In Progress" header
+            let header = NSMenuItem(
+                title: "In Progress:",
+                action: nil,
+                keyEquivalent: ""
+            )
+            header.isEnabled = false
+            menu.insertItem(header, at: inProgressSectionIndex + 1)
+
+            // Add each in-progress resource as a clickable item
+            for (index, inProgress) in currentInProgress.enumerated() {
+                let inProgressItem = NSMenuItem(
+                    title: "  \(inProgress.resourceName) - \(inProgress.duration)",
+                    action: #selector(openInProgressInBrowser(_:)),
+                    keyEquivalent: ""
+                )
+                inProgressItem.target = self
+                inProgressItem.representedObject = inProgress
+                menu.insertItem(inProgressItem, at: inProgressSectionIndex + 2 + index)
+            }
+        } else {
+            // No in-progress resources, hide the separator
+            if let separator = menu.item(withTag: 103) {
+                separator.isHidden = true
+            }
+        }
+    }
+
+    /// Update the Recent Failures section in the menu
+    private func updateFailuresInMenu() {
+        guard let menu = statusItem?.menu else { return }
+
+        // Find the failures section separator (tag 102)
+        guard let failuresSectionIndex = menu.items.firstIndex(where: { $0.tag == 102 }) else {
+            return
+        }
+
+        // Remove any existing failure items (they'll be between the separator and the next separator)
+        let indexToRemove = failuresSectionIndex + 1
+        while indexToRemove < menu.items.count {
+            let item = menu.items[indexToRemove]
+            // Stop when we hit the next separator or a tagged item (start of next section)
+            if item.isSeparatorItem || (item.tag > 0 && item.tag != 102) {
+                break
+            }
+            menu.removeItem(at: indexToRemove)
+        }
+
+        // If we have failures, show the section and add items
+        if !currentFailures.isEmpty {
+            // Show the separator
+            if let separator = menu.item(withTag: 102) {
+                separator.isHidden = false
+            }
+
+            // Add "Recent Failures" header
+            let header = NSMenuItem(
+                title: "Recent Failures:",
+                action: nil,
+                keyEquivalent: ""
+            )
+            header.isEnabled = false
+            menu.insertItem(header, at: failuresSectionIndex + 1)
+
+            // Add each failure as a clickable item
+            for (index, failure) in currentFailures.enumerated() {
+                let failureItem = NSMenuItem(
+                    title: "  \(failure.resourceName) - \(failure.timeAgo)",
+                    action: #selector(openFailureInBrowser(_:)),
+                    keyEquivalent: ""
+                )
+                failureItem.target = self
+                failureItem.representedObject = failure
+                menu.insertItem(failureItem, at: failuresSectionIndex + 2 + index)
+            }
+        } else {
+            // No failures, hide the separator
+            if let separator = menu.item(withTag: 102) {
+                separator.isHidden = true
+            }
+        }
+    }
+
     // MARK: - Menu Actions
 
     @objc private func openInBrowser() {
@@ -643,6 +797,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func quit() {
         NSApplication.shared.terminate(nil)
+    }
+
+    @objc private func openFailureInBrowser(_ sender: NSMenuItem) {
+        // Get the failure info from the menu item
+        guard let failure = sender.representedObject as? FailureInfo else {
+            return
+        }
+
+        // Open the failure's resource URL in the browser
+        if let url = URL(string: failure.webURL) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func openInProgressInBrowser(_ sender: NSMenuItem) {
+        // Get the in-progress info from the menu item
+        guard let inProgress = sender.representedObject as? InProgressInfo else {
+            return
+        }
+
+        // Open the in-progress resource URL in the browser
+        if let url = URL(string: inProgress.webURL) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     // MARK: - Development Mode Actions
