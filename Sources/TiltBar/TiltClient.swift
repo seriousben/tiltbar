@@ -43,6 +43,12 @@ class TiltClient {
     /// Dictionary of all known resources by name
     private var resources: [String: UIResource] = [:]
 
+    /// List of recent failures (most recent first, max 5)
+    private var recentFailures: [FailureInfo] = []
+
+    /// List of resources currently in progress (most recent first, max 5)
+    private var inProgressResources: [InProgressInfo] = []
+
     // MARK: - Callbacks
 
     /// Called when the aggregated resource status changes
@@ -50,6 +56,12 @@ class TiltClient {
 
     /// Called when the connection state changes
     var onConnectionStateChange: ((ConnectionState) -> Void)?
+
+    /// Called when the list of recent failures changes
+    var onFailuresUpdate: (([FailureInfo]) -> Void)?
+
+    /// Called when the list of in-progress resources changes
+    var onInProgressUpdate: (([InProgressInfo]) -> Void)?
 
     // MARK: - Initialization
 
@@ -234,8 +246,134 @@ class TiltClient {
         // Update our local cache
         resources[resourceName] = resource
 
+        // Track failures and in-progress resources
+        trackResourceStatus(resource)
+
         // Recalculate and emit the aggregated status
         emitStatus()
+    }
+
+    /// Track resource status (failures and in-progress) and update the lists
+    private func trackResourceStatus(_ resource: UIResource) {
+        let resourceName = resource.metadata.name
+        let status = resource.determineStatus()
+
+        // Track failures
+        if status == .error {
+            // Extract error message from build history
+            let errorMessage = resource.status?.buildHistory?.first?.error ?? "Unknown error"
+
+            // Parse timestamp from build history or use current time
+            let timestamp: Date
+            if let finishTimeStr = resource.status?.buildHistory?.first?.finishTime {
+                // Parse ISO8601 timestamp
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                timestamp = formatter.date(from: finishTimeStr) ?? Date()
+            } else {
+                timestamp = Date()
+            }
+
+            // Check if this resource is already in the failures list
+            if let existingIndex = recentFailures.firstIndex(where: { $0.resourceName == resourceName }) {
+                // Update the existing failure with new timestamp/error
+                recentFailures[existingIndex] = FailureInfo(
+                    resourceName: resourceName,
+                    errorMessage: errorMessage,
+                    timestamp: timestamp
+                )
+            } else {
+                // Add new failure
+                recentFailures.insert(
+                    FailureInfo(
+                        resourceName: resourceName,
+                        errorMessage: errorMessage,
+                        timestamp: timestamp
+                    ),
+                    at: 0
+                )
+            }
+
+            // Keep only the 5 most recent failures, sorted by timestamp (most recent first)
+            recentFailures.sort { $0.timestamp > $1.timestamp }
+            if recentFailures.count > 5 {
+                recentFailures = Array(recentFailures.prefix(5))
+            }
+
+            // Emit failures update
+            emitFailures()
+        } else {
+            // Resource is no longer in error state - remove from failures list
+            if let index = recentFailures.firstIndex(where: { $0.resourceName == resourceName }) {
+                recentFailures.remove(at: index)
+                emitFailures()
+            }
+        }
+
+        // Track in-progress resources
+        if status == .inProgress {
+            // Get start time from currentBuild or use current time
+            let startTime: Date
+            if let startTimeStr = resource.status?.currentBuild?.startTime {
+                // Parse ISO8601 timestamp
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                startTime = formatter.date(from: startTimeStr) ?? Date()
+            } else {
+                startTime = Date()
+            }
+
+            // Check if this resource is already in the in-progress list
+            if let existingIndex = inProgressResources.firstIndex(where: { $0.resourceName == resourceName }) {
+                // Update the existing in-progress info with new start time
+                inProgressResources[existingIndex] = InProgressInfo(
+                    resourceName: resourceName,
+                    startTime: startTime
+                )
+            } else {
+                // Add new in-progress resource
+                inProgressResources.insert(
+                    InProgressInfo(
+                        resourceName: resourceName,
+                        startTime: startTime
+                    ),
+                    at: 0
+                )
+            }
+
+            // Keep only the 5 most recent in-progress resources, sorted by start time (most recent first)
+            inProgressResources.sort { $0.startTime > $1.startTime }
+            if inProgressResources.count > 5 {
+                inProgressResources = Array(inProgressResources.prefix(5))
+            }
+
+            // Emit in-progress update
+            emitInProgress()
+        } else {
+            // Resource is no longer in progress - remove from in-progress list
+            if let index = inProgressResources.firstIndex(where: { $0.resourceName == resourceName }) {
+                inProgressResources.remove(at: index)
+                emitInProgress()
+            }
+        }
+    }
+
+    /// Notify the callback with the current list of failures
+    private func emitFailures() {
+        // Notify on the main thread (since this will update UI)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.onFailuresUpdate?(self.recentFailures)
+        }
+    }
+
+    /// Notify the callback with the current list of in-progress resources
+    private func emitInProgress() {
+        // Notify on the main thread (since this will update UI)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.onInProgressUpdate?(self.inProgressResources)
+        }
     }
 
     /// Calculate the current aggregated status and notify the callback

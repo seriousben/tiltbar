@@ -117,6 +117,74 @@ enum ConnectionState {
     }
 }
 
+// MARK: - Failure Tracking
+
+/// Information about a resource failure for display in the menu
+struct FailureInfo {
+    /// The name of the resource that failed
+    let resourceName: String
+
+    /// The error message from the build
+    let errorMessage: String
+
+    /// When the failure occurred
+    let timestamp: Date
+
+    /// URL to view this resource in the Tilt web UI
+    var webURL: String {
+        "http://localhost:10350/r/\(resourceName)/overview"
+    }
+
+    /// Human-readable time since failure
+    var timeAgo: String {
+        let interval = Date().timeIntervalSince(timestamp)
+
+        if interval < 60 {
+            return "just now"
+        } else if interval < 3600 {
+            let minutes = Int(interval / 60)
+            return "\(minutes)m ago"
+        } else if interval < 86400 {
+            let hours = Int(interval / 3600)
+            return "\(hours)h ago"
+        } else {
+            let days = Int(interval / 86400)
+            return "\(days)d ago"
+        }
+    }
+}
+
+/// Information about a resource currently in progress for display in the menu
+struct InProgressInfo {
+    /// The name of the resource being built/updated
+    let resourceName: String
+
+    /// When the build/update started
+    let startTime: Date
+
+    /// URL to view this resource in the Tilt web UI
+    var webURL: String {
+        "http://localhost:10350/r/\(resourceName)/overview"
+    }
+
+    /// Human-readable duration
+    var duration: String {
+        let interval = Date().timeIntervalSince(startTime)
+
+        if interval < 60 {
+            let seconds = Int(interval)
+            return "\(seconds)s"
+        } else if interval < 3600 {
+            let minutes = Int(interval / 60)
+            return "\(minutes)m \(Int(interval.truncatingRemainder(dividingBy: 60)))s"
+        } else {
+            let hours = Int(interval / 3600)
+            let minutes = Int((interval.truncatingRemainder(dividingBy: 3600)) / 60)
+            return "\(hours)h \(minutes)m"
+        }
+    }
+}
+
 // MARK: - Helper Extensions
 
 extension UIResource {
@@ -126,7 +194,14 @@ extension UIResource {
             return .unknown
         }
 
-        // Check updateStatus first (most authoritative)
+        // Check if currently building FIRST - takes precedence over everything
+        // A resource that is actively rebuilding should always show as in-progress,
+        // even if it previously failed
+        if status.currentBuild != nil {
+            return .inProgress
+        }
+
+        // Check updateStatus (most authoritative for non-building resources)
         if let updateStatus = status.updateStatus {
             switch updateStatus {
             case "error":
@@ -141,11 +216,6 @@ extension UIResource {
             default:
                 break
             }
-        }
-
-        // If currently building, it's in progress
-        if status.currentBuild != nil {
-            return .inProgress
         }
 
         // Check most recent build for errors or warnings
