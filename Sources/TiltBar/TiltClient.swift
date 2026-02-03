@@ -46,8 +46,18 @@ class TiltClient {
     /// List of recent failures (most recent first, max 5)
     private var recentFailures: [FailureInfo] = []
 
-    /// List of resources currently in progress (most recent first, max 5)
+    /// List of resources currently in progress (sorted by dependent count, max 5)
     private var inProgressResources: [InProgressInfo] = []
+
+    /// List of pending resources that are blocking others (sorted by dependent count, max 5)
+    private var pendingBlockers: [PendingBlockerInfo] = []
+
+    /// Dependency graph: maps resource name to list of resources that depend on it
+    /// (reverse dependency map - used to count how many resources are waiting)
+    private var dependentsMap: [String: [String]] = [:]
+
+    /// Timer to periodically refresh the dependency graph
+    private var dependencyRefreshTimer: Timer?
 
     // MARK: - Callbacks
 
@@ -62,6 +72,9 @@ class TiltClient {
 
     /// Called when the list of in-progress resources changes
     var onInProgressUpdate: (([InProgressInfo]) -> Void)?
+
+    /// Called when the list of pending blockers changes
+    var onPendingBlockersUpdate: (([PendingBlockerInfo]) -> Void)?
 
     // MARK: - Initialization
 
@@ -88,6 +101,12 @@ class TiltClient {
         watchTask?.cancel()
         watchTask = nil
 
+        // Stop the dependency refresh timer
+        DispatchQueue.main.async { [weak self] in
+            self?.dependencyRefreshTimer?.invalidate()
+            self?.dependencyRefreshTimer = nil
+        }
+
         // Terminate the process if running
         if let process = process, process.isRunning {
             process.terminate()
@@ -101,6 +120,135 @@ class TiltClient {
     func reconnectNow() {
         currentRetryDelay = initialRetryDelay
         start()
+    }
+
+    /// Trigger an update/rebuild for a specific resource
+    func triggerUpdate(resourceName: String) {
+        Task {
+            do {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: tiltPath)
+                process.arguments = ["trigger", resourceName]
+
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = pipe
+
+                try process.run()
+                process.waitUntilExit()
+
+                if process.terminationStatus != 0 {
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    let output = String(data: data, encoding: .utf8) ?? ""
+                    print("Failed to trigger \(resourceName): \(output)")
+                } else {
+                    print("Triggered update for \(resourceName)")
+                }
+            } catch {
+                print("Error triggering update for \(resourceName): \(error)")
+            }
+        }
+    }
+
+    /// Refresh the dependency graph from Tilt's engine state
+    func refreshDependencyGraph() {
+        Task {
+            await fetchDependencyGraph()
+        }
+    }
+
+    /// Fetch and build the dependency graph (reverse mapping)
+    private func fetchDependencyGraph() async {
+        do {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: tiltPath)
+            process.arguments = ["dump", "engine"]
+
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+
+            try process.run()
+            process.waitUntilExit()
+
+            guard process.terminationStatus == 0 else {
+                return
+            }
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+
+            // Parse the JSON to extract dependencies
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let manifestTargets = json["ManifestTargets"] as? [String: Any] else {
+                return
+            }
+
+            // Build the reverse dependency map
+            var newDependentsMap: [String: [String]] = [:]
+
+            for (_, targetValue) in manifestTargets {
+                guard let target = targetValue as? [String: Any],
+                      let manifest = target["Manifest"] as? [String: Any],
+                      let name = manifest["Name"] as? String else {
+                    continue
+                }
+
+                // Get this resource's dependencies
+                if let deps = manifest["ResourceDependencies"] as? [String] {
+                    for dep in deps {
+                        // Add this resource as a dependent of 'dep'
+                        if newDependentsMap[dep] == nil {
+                            newDependentsMap[dep] = []
+                        }
+                        newDependentsMap[dep]?.append(name)
+                    }
+                }
+            }
+
+            // Update on main thread
+            DispatchQueue.main.async { [weak self] in
+                self?.dependentsMap = newDependentsMap
+                // Re-sort in-progress resources with new dependency info
+                self?.updateInProgressSorting()
+            }
+        } catch {
+            print("Error fetching dependency graph: \(error)")
+        }
+    }
+
+    /// Update the sorting of in-progress resources and pending blockers based on dependency count
+    private func updateInProgressSorting() {
+        // Update dependent counts for in-progress resources
+        for i in 0..<inProgressResources.count {
+            let resourceName = inProgressResources[i].resourceName
+            inProgressResources[i].dependentCount = dependentsMap[resourceName]?.count ?? 0
+        }
+
+        // Sort by dependent count (descending), then by start time (oldest first for resources with same deps)
+        inProgressResources.sort { a, b in
+            if a.dependentCount != b.dependentCount {
+                return a.dependentCount > b.dependentCount
+            }
+            return a.startTime < b.startTime
+        }
+
+        // Emit update
+        emitInProgress()
+
+        // Update dependent counts for pending blockers
+        for i in 0..<pendingBlockers.count {
+            let resourceName = pendingBlockers[i].resourceName
+            pendingBlockers[i].dependentCount = dependentsMap[resourceName]?.count ?? 0
+        }
+
+        // Remove any that no longer have dependents
+        pendingBlockers.removeAll { $0.dependentCount == 0 }
+
+        // Sort by dependent count (descending)
+        pendingBlockers.sort { $0.dependentCount > $1.dependentCount }
+
+        // Emit update
+        emitPendingBlockers()
     }
 
     // MARK: - Watch Loop
@@ -310,9 +458,13 @@ class TiltClient {
             }
         }
 
-        // Track in-progress resources
-        if status == .inProgress {
-            // Get start time from currentBuild or use current time
+        // Track actively updating resources (only those with currentBuild, not pending ones)
+        // We check for currentBuild directly rather than using status == .inProgress
+        // because pending resources are waiting on dependencies, not actually updating
+        let isActivelyUpdating = resource.status?.currentBuild != nil
+
+        if isActivelyUpdating {
+            // Get start time from currentBuild
             let startTime: Date
             if let startTimeStr = resource.status?.currentBuild?.startTime {
                 // Parse ISO8601 timestamp
@@ -323,37 +475,92 @@ class TiltClient {
                 startTime = Date()
             }
 
+            // Get the dependent count from the dependency map
+            let dependentCount = dependentsMap[resourceName]?.count ?? 0
+
             // Check if this resource is already in the in-progress list
             if let existingIndex = inProgressResources.firstIndex(where: { $0.resourceName == resourceName }) {
-                // Update the existing in-progress info with new start time
+                // Update the existing in-progress info
                 inProgressResources[existingIndex] = InProgressInfo(
                     resourceName: resourceName,
-                    startTime: startTime
+                    startTime: startTime,
+                    dependentCount: dependentCount
                 )
             } else {
                 // Add new in-progress resource
-                inProgressResources.insert(
+                inProgressResources.append(
                     InProgressInfo(
                         resourceName: resourceName,
-                        startTime: startTime
-                    ),
-                    at: 0
+                        startTime: startTime,
+                        dependentCount: dependentCount
+                    )
                 )
             }
 
-            // Keep only the 5 most recent in-progress resources, sorted by start time (most recent first)
-            inProgressResources.sort { $0.startTime > $1.startTime }
+            // Sort by dependent count (descending), then by start time (oldest first for resources with same deps)
+            inProgressResources.sort { a, b in
+                if a.dependentCount != b.dependentCount {
+                    return a.dependentCount > b.dependentCount
+                }
+                return a.startTime < b.startTime  // Oldest first within same priority
+            }
+
+            // Keep only the top 5 in-progress resources
             if inProgressResources.count > 5 {
                 inProgressResources = Array(inProgressResources.prefix(5))
             }
 
             // Emit in-progress update
             emitInProgress()
+
+            // Remove from pending blockers if it was there (now actively updating)
+            if let index = pendingBlockers.firstIndex(where: { $0.resourceName == resourceName }) {
+                pendingBlockers.remove(at: index)
+                emitPendingBlockers()
+            }
         } else {
-            // Resource is no longer in progress - remove from in-progress list
+            // Resource is not actively updating - remove from in-progress list if present
             if let index = inProgressResources.firstIndex(where: { $0.resourceName == resourceName }) {
                 inProgressResources.remove(at: index)
                 emitInProgress()
+            }
+
+            // Check if this is a pending blocker (not ok/ready and has dependents)
+            let dependentCount = dependentsMap[resourceName]?.count ?? 0
+            let isPending = status == .inProgress  // Pending status (not actively building)
+            let isBlockingOthers = dependentCount > 0
+
+            if isPending && isBlockingOthers {
+                // Add or update in pending blockers
+                if let existingIndex = pendingBlockers.firstIndex(where: { $0.resourceName == resourceName }) {
+                    pendingBlockers[existingIndex] = PendingBlockerInfo(
+                        resourceName: resourceName,
+                        dependentCount: dependentCount
+                    )
+                } else {
+                    pendingBlockers.append(
+                        PendingBlockerInfo(
+                            resourceName: resourceName,
+                            dependentCount: dependentCount
+                        )
+                    )
+                }
+
+                // Sort by dependent count (descending)
+                pendingBlockers.sort { $0.dependentCount > $1.dependentCount }
+
+                // Keep only the top 5
+                if pendingBlockers.count > 5 {
+                    pendingBlockers = Array(pendingBlockers.prefix(5))
+                }
+
+                emitPendingBlockers()
+            } else {
+                // Not a pending blocker - remove if present
+                if let index = pendingBlockers.firstIndex(where: { $0.resourceName == resourceName }) {
+                    pendingBlockers.remove(at: index)
+                    emitPendingBlockers()
+                }
             }
         }
     }
@@ -373,6 +580,15 @@ class TiltClient {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.onInProgressUpdate?(self.inProgressResources)
+        }
+    }
+
+    /// Notify the callback with the current list of pending blockers
+    private func emitPendingBlockers() {
+        // Notify on the main thread (since this will update UI)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.onPendingBlockersUpdate?(self.pendingBlockers)
         }
     }
 
@@ -406,6 +622,26 @@ class TiltClient {
     /// Update the connection state and notify the callback
     private func updateConnectionState(_ newState: ConnectionState) {
         connectionState = newState
+
+        // Start/stop dependency refresh timer based on connection state
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+
+            if newState == .connected {
+                // Fetch dependency graph immediately on connect
+                self.refreshDependencyGraph()
+
+                // Start periodic refresh (every 30 seconds)
+                self.dependencyRefreshTimer?.invalidate()
+                self.dependencyRefreshTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+                    self?.refreshDependencyGraph()
+                }
+            } else {
+                // Stop the timer when not connected
+                self.dependencyRefreshTimer?.invalidate()
+                self.dependencyRefreshTimer = nil
+            }
+        }
 
         // Notify on the main thread
         DispatchQueue.main.async { [weak self] in

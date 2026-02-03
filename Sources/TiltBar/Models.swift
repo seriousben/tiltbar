@@ -81,12 +81,13 @@ struct ResourceStatus {
     }
 
     /// Returns a human-readable summary
+    /// Order matches the status bar colors: red, yellow, gray, green
     var summary: String {
         var parts: [String] = []
-        if inProgress > 0 { parts.append("\(inProgress) in progress") }
-        if success > 0 { parts.append("\(success) ok") }
-        if warning > 0 { parts.append("\(warning) warnings") }
         if error > 0 { parts.append("\(error) errors") }
+        if warning > 0 { parts.append("\(warning) warnings") }
+        if inProgress > 0 { parts.append("\(inProgress) pending") }
+        if success > 0 { parts.append("\(success) ok") }
         return parts.isEmpty ? "No resources" : parts.joined(separator: ", ")
     }
 }
@@ -162,6 +163,9 @@ struct InProgressInfo {
     /// When the build/update started
     let startTime: Date
 
+    /// Number of resources that depend on this resource (waiting for it)
+    var dependentCount: Int = 0
+
     /// URL to view this resource in the Tilt web UI
     var webURL: String {
         "http://localhost:10350/r/\(resourceName)/overview"
@@ -182,6 +186,20 @@ struct InProgressInfo {
             let minutes = Int((interval.truncatingRemainder(dividingBy: 3600)) / 60)
             return "\(hours)h \(minutes)m"
         }
+    }
+}
+
+/// Information about a pending resource that is blocking others
+struct PendingBlockerInfo {
+    /// The name of the pending resource
+    let resourceName: String
+
+    /// Number of resources that depend on this resource (waiting for it)
+    var dependentCount: Int = 0
+
+    /// URL to view this resource in the Tilt web UI
+    var webURL: String {
+        "http://localhost:10350/r/\(resourceName)/overview"
     }
 }
 

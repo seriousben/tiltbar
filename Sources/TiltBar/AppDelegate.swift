@@ -41,6 +41,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Current list of in-progress resources
     private var currentInProgress: [InProgressInfo] = []
 
+    /// Current list of pending blockers
+    private var currentPendingBlockers: [PendingBlockerInfo] = []
+
     /// Cached Tilt icons
     private var grayIcon: NSImage?
     private var greenIcon: NSImage?
@@ -118,6 +121,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         tiltClient.onInProgressUpdate = { [weak self] inProgress in
             self?.handleInProgressUpdate(inProgress)
+        }
+
+        tiltClient.onPendingBlockersUpdate = { [weak self] pendingBlockers in
+            self?.handlePendingBlockersUpdate(pendingBlockers)
         }
 
         // Start watching Tilt
@@ -216,6 +223,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         inProgressSectionStart.tag = 103
         inProgressSectionStart.isHidden = true // Initially hidden, shown when in-progress resources exist
         menu.addItem(inProgressSectionStart)
+
+        // Pending Blockers section (populated dynamically)
+        // Tag 104 marks the start of the pending blockers section
+        let pendingSectionStart = NSMenuItem.separator()
+        pendingSectionStart.tag = 104
+        pendingSectionStart.isHidden = true // Initially hidden, shown when pending blockers exist
+        menu.addItem(pendingSectionStart)
 
         // Recent Failures section (populated dynamically)
         // Tag 102 marks the start of the failures section
@@ -462,6 +476,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private func handlePendingBlockersUpdate(_ pendingBlockers: [PendingBlockerInfo]) {
+        // Ignore live updates when in development mode
+        if developmentMode == .live {
+            currentPendingBlockers = pendingBlockers
+            updatePendingBlockersInMenu()
+        }
+    }
+
     /// Animates the icon transition with a smooth fade effect
     private func setIconWithAnimation(_ newIcon: NSImage?, button: NSStatusBarButton) {
         // Skip animation if icon hasn't changed
@@ -666,6 +688,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Update the In Progress section in the menu
+    /// Uses in-place updates to avoid flickering
     private func updateInProgressInMenu() {
         guard let menu = statusItem?.menu else { return }
 
@@ -674,53 +697,167 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        // Remove any existing in-progress items
-        let indexToRemove = inProgressSectionIndex + 1
-        while indexToRemove < menu.items.count {
-            let item = menu.items[indexToRemove]
-            // Stop when we hit the next separator or a tagged item (start of next section)
-            if item.isSeparatorItem || (item.tag > 0 && item.tag != 103) {
-                break
-            }
-            menu.removeItem(at: indexToRemove)
-        }
+        // Tags for in-progress items: 1030 = header, 1031-1035 = items
+        let headerTag = 1030
+        let firstItemTag = 1031
 
-        // If we have in-progress resources, show the section and add items
         if !currentInProgress.isEmpty {
             // Show the separator
             if let separator = menu.item(withTag: 103) {
                 separator.isHidden = false
             }
 
-            // Add "In Progress" header
-            let header = NSMenuItem(
-                title: "In Progress:",
-                action: nil,
-                keyEquivalent: ""
-            )
-            header.isEnabled = false
-            menu.insertItem(header, at: inProgressSectionIndex + 1)
-
-            // Add each in-progress resource as a clickable item
-            for (index, inProgress) in currentInProgress.enumerated() {
-                let inProgressItem = NSMenuItem(
-                    title: "  \(inProgress.resourceName) - \(inProgress.duration)",
-                    action: #selector(openInProgressInBrowser(_:)),
+            // Add or update header with count
+            let headerTitle = "Updating: \(currentInProgress.count)"
+            if let existingHeader = menu.item(withTag: headerTag) {
+                existingHeader.title = headerTitle
+            } else {
+                let header = NSMenuItem(
+                    title: headerTitle,
+                    action: nil,
                     keyEquivalent: ""
                 )
-                inProgressItem.target = self
-                inProgressItem.representedObject = inProgress
-                menu.insertItem(inProgressItem, at: inProgressSectionIndex + 2 + index)
+                header.isEnabled = false
+                header.tag = headerTag
+                menu.insertItem(header, at: inProgressSectionIndex + 1)
+            }
+
+            // Update or add each in-progress resource
+            for (index, inProgress) in currentInProgress.enumerated() {
+                let itemTag = firstItemTag + index
+
+                // Build title with dependent count if > 0
+                var title = "  \(inProgress.resourceName) - \(inProgress.duration)"
+                if inProgress.dependentCount > 0 {
+                    title += " (\(inProgress.dependentCount) waiting)"
+                }
+
+                if let existingItem = menu.item(withTag: itemTag) {
+                    // Update existing item in place
+                    existingItem.title = title
+                    existingItem.representedObject = inProgress
+                } else {
+                    // Create new item
+                    let inProgressItem = NSMenuItem(
+                        title: title,
+                        action: #selector(openInProgressInBrowser(_:)),
+                        keyEquivalent: ""
+                    )
+                    inProgressItem.target = self
+                    inProgressItem.tag = itemTag
+                    inProgressItem.representedObject = inProgress
+                    menu.insertItem(inProgressItem, at: inProgressSectionIndex + 2 + index)
+                }
+            }
+
+            // Remove extra items if the list shrank
+            for index in currentInProgress.count..<5 {
+                let itemTag = firstItemTag + index
+                if let item = menu.item(withTag: itemTag) {
+                    menu.removeItem(item)
+                }
             }
         } else {
-            // No in-progress resources, hide the separator
+            // No in-progress resources, hide the separator and remove all items
             if let separator = menu.item(withTag: 103) {
                 separator.isHidden = true
+            }
+            if let header = menu.item(withTag: headerTag) {
+                menu.removeItem(header)
+            }
+            for index in 0..<5 {
+                let itemTag = firstItemTag + index
+                if let item = menu.item(withTag: itemTag) {
+                    menu.removeItem(item)
+                }
+            }
+        }
+    }
+
+    /// Update the Pending Blockers section in the menu
+    /// Uses in-place updates to avoid flickering
+    private func updatePendingBlockersInMenu() {
+        guard let menu = statusItem?.menu else { return }
+
+        // Find the pending section separator (tag 104)
+        guard let pendingSectionIndex = menu.items.firstIndex(where: { $0.tag == 104 }) else {
+            return
+        }
+
+        // Tags for pending items: 1040 = header, 1041-1045 = items
+        let headerTag = 1040
+        let firstItemTag = 1041
+
+        if !currentPendingBlockers.isEmpty {
+            // Show the separator
+            if let separator = menu.item(withTag: 104) {
+                separator.isHidden = false
+            }
+
+            // Add or update header with count
+            let headerTitle = "Pending: \(currentPendingBlockers.count)"
+            if let existingHeader = menu.item(withTag: headerTag) {
+                existingHeader.title = headerTitle
+            } else {
+                let header = NSMenuItem(
+                    title: headerTitle,
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                header.isEnabled = false
+                header.tag = headerTag
+                menu.insertItem(header, at: pendingSectionIndex + 1)
+            }
+
+            // Update or add each pending blocker
+            for (index, pending) in currentPendingBlockers.enumerated() {
+                let itemTag = firstItemTag + index
+                let title = "  \(pending.resourceName) (\(pending.dependentCount) waiting)"
+
+                if let existingItem = menu.item(withTag: itemTag) {
+                    // Update existing item in place
+                    existingItem.title = title
+                    existingItem.representedObject = pending
+                } else {
+                    // Create new item
+                    let pendingItem = NSMenuItem(
+                        title: title,
+                        action: #selector(openPendingInBrowser(_:)),
+                        keyEquivalent: ""
+                    )
+                    pendingItem.target = self
+                    pendingItem.tag = itemTag
+                    pendingItem.representedObject = pending
+                    menu.insertItem(pendingItem, at: pendingSectionIndex + 2 + index)
+                }
+            }
+
+            // Remove extra items if the list shrank
+            for index in currentPendingBlockers.count..<5 {
+                let itemTag = firstItemTag + index
+                if let item = menu.item(withTag: itemTag) {
+                    menu.removeItem(item)
+                }
+            }
+        } else {
+            // No pending blockers, hide the separator and remove all items
+            if let separator = menu.item(withTag: 104) {
+                separator.isHidden = true
+            }
+            if let header = menu.item(withTag: headerTag) {
+                menu.removeItem(header)
+            }
+            for index in 0..<5 {
+                let itemTag = firstItemTag + index
+                if let item = menu.item(withTag: itemTag) {
+                    menu.removeItem(item)
+                }
             }
         }
     }
 
     /// Update the Recent Failures section in the menu
+    /// Uses in-place updates to avoid flickering
     private func updateFailuresInMenu() {
         guard let menu = statusItem?.menu else { return }
 
@@ -729,48 +866,105 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        // Remove any existing failure items (they'll be between the separator and the next separator)
-        let indexToRemove = failuresSectionIndex + 1
-        while indexToRemove < menu.items.count {
-            let item = menu.items[indexToRemove]
-            // Stop when we hit the next separator or a tagged item (start of next section)
-            if item.isSeparatorItem || (item.tag > 0 && item.tag != 102) {
-                break
-            }
-            menu.removeItem(at: indexToRemove)
-        }
+        // Tags for failure items: 1020 = header, 1021-1025 = items
+        let headerTag = 1020
+        let firstItemTag = 1021
 
-        // If we have failures, show the section and add items
         if !currentFailures.isEmpty {
             // Show the separator
             if let separator = menu.item(withTag: 102) {
                 separator.isHidden = false
             }
 
-            // Add "Recent Failures" header
-            let header = NSMenuItem(
-                title: "Recent Failures:",
-                action: nil,
-                keyEquivalent: ""
-            )
-            header.isEnabled = false
-            menu.insertItem(header, at: failuresSectionIndex + 1)
-
-            // Add each failure as a clickable item
-            for (index, failure) in currentFailures.enumerated() {
-                let failureItem = NSMenuItem(
-                    title: "  \(failure.resourceName) - \(failure.timeAgo)",
-                    action: #selector(openFailureInBrowser(_:)),
+            // Add or update header with count
+            let headerTitle = "Failures: \(currentFailures.count)"
+            if let existingHeader = menu.item(withTag: headerTag) {
+                existingHeader.title = headerTitle
+            } else {
+                let header = NSMenuItem(
+                    title: headerTitle,
+                    action: nil,
                     keyEquivalent: ""
                 )
-                failureItem.target = self
-                failureItem.representedObject = failure
-                menu.insertItem(failureItem, at: failuresSectionIndex + 2 + index)
+                header.isEnabled = false
+                header.tag = headerTag
+                menu.insertItem(header, at: failuresSectionIndex + 1)
+            }
+
+            // Update or add each failure
+            for (index, failure) in currentFailures.enumerated() {
+                let itemTag = firstItemTag + index
+                let title = "  \(failure.resourceName) - \(failure.timeAgo)"
+
+                if let existingItem = menu.item(withTag: itemTag) {
+                    // Update existing item in place
+                    existingItem.title = title
+                    existingItem.representedObject = failure
+                    // Update submenu's representedObjects too
+                    if let submenu = existingItem.submenu {
+                        if let openItem = submenu.items.first {
+                            openItem.representedObject = failure
+                        }
+                        if submenu.items.count > 1 {
+                            submenu.items[1].representedObject = failure.resourceName
+                        }
+                    }
+                } else {
+                    // Create new item with submenu
+                    let failureItem = NSMenuItem(
+                        title: title,
+                        action: nil,
+                        keyEquivalent: ""
+                    )
+                    failureItem.tag = itemTag
+                    failureItem.representedObject = failure
+
+                    // Create submenu for this resource
+                    let submenu = NSMenu()
+
+                    let openItem = NSMenuItem(
+                        title: "Open in Browser",
+                        action: #selector(openFailureInBrowser(_:)),
+                        keyEquivalent: ""
+                    )
+                    openItem.target = self
+                    openItem.representedObject = failure
+                    submenu.addItem(openItem)
+
+                    let triggerItem = NSMenuItem(
+                        title: "Trigger Update",
+                        action: #selector(triggerResourceUpdate(_:)),
+                        keyEquivalent: ""
+                    )
+                    triggerItem.target = self
+                    triggerItem.representedObject = failure.resourceName
+                    submenu.addItem(triggerItem)
+
+                    failureItem.submenu = submenu
+                    menu.insertItem(failureItem, at: failuresSectionIndex + 2 + index)
+                }
+            }
+
+            // Remove extra items if the list shrank
+            for index in currentFailures.count..<5 {
+                let itemTag = firstItemTag + index
+                if let item = menu.item(withTag: itemTag) {
+                    menu.removeItem(item)
+                }
             }
         } else {
-            // No failures, hide the separator
+            // No failures, hide the separator and remove all items
             if let separator = menu.item(withTag: 102) {
                 separator.isHidden = true
+            }
+            if let header = menu.item(withTag: headerTag) {
+                menu.removeItem(header)
+            }
+            for index in 0..<5 {
+                let itemTag = firstItemTag + index
+                if let item = menu.item(withTag: itemTag) {
+                    menu.removeItem(item)
+                }
             }
         }
     }
@@ -819,6 +1013,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Open the in-progress resource URL in the browser
         if let url = URL(string: inProgress.webURL) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func triggerResourceUpdate(_ sender: NSMenuItem) {
+        // Get the resource name from the menu item
+        guard let resourceName = sender.representedObject as? String else {
+            return
+        }
+
+        // Trigger the update via TiltClient
+        tiltClient.triggerUpdate(resourceName: resourceName)
+    }
+
+    @objc private func openPendingInBrowser(_ sender: NSMenuItem) {
+        // Get the pending info from the menu item
+        guard let pending = sender.representedObject as? PendingBlockerInfo else {
+            return
+        }
+
+        // Open the pending resource URL in the browser
+        if let url = URL(string: pending.webURL) {
             NSWorkspace.shared.open(url)
         }
     }
