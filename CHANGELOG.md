@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.0](https://github.com/seriousben/tiltbar/compare/v1.2.0...v1.3.0) (2026-02-04)
+
+
+### Features
+
+* highlight pending vs updating with trigger update for failures ([#6](https://github.com/seriousben/tiltbar/issues/6)) ([ff9b82e](https://github.com/seriousben/tiltbar/commit/ff9b82e843360440a5a9f9c0e1b628dad79cebb1))
+* improve resource status display and fix watch reliability ([#8](https://github.com/seriousben/tiltbar/issues/8)) ([442a9b0](https://github.com/seriousben/tiltbar/commit/442a9b07b97677043127c7e8cc59f3e6e6724a45))
+
 ## [1.2.0](https://github.com/seriousben/tiltbar/compare/v1.1.1...v1.2.0) (2025-11-26)
 
 
