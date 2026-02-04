@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/seriousben/tiltbar/compare/v1.3.0...v1.4.0) (2026-02-04)
+
+
+### Features
+
+* expose version in menu ([#9](https://github.com/seriousben/tiltbar/issues/9)) ([bd2c024](https://github.com/seriousben/tiltbar/commit/bd2c0246047b27f84025d6b6a5cda9ef41946f4a))
+
 ## [1.3.0](https://github.com/seriousben/tiltbar/compare/v1.2.0...v1.3.0) (2026-02-04)
 
 
