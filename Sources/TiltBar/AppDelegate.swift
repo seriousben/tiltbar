@@ -22,6 +22,22 @@ import Cocoa
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Properties
 
+    /// App version read from Info.plist (updated automatically by release-please)
+    /// Appends "-dev (hash)" suffix for development builds
+    private var appVersion: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        if isDevelopmentBuild {
+            let suffix = gitCommitHash.isEmpty ? "dev" : "dev @\(gitCommitHash)"
+            return "\(version)-\(suffix)"
+        }
+        return version
+    }
+
+    /// Clean version for release notes URL (without dev suffix)
+    private var releaseVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+    }
+
     /// The status bar item that appears in the menu bar
     /// We keep a strong reference to prevent it from being deallocated
     private var statusItem: NSStatusItem?
@@ -249,9 +265,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         openMenuItem.target = self
         menu.addItem(openMenuItem)
 
-        // View on GitHub
+        // View on GitHub with version
         let githubMenuItem = NSMenuItem(
-            title: "View on GitHub",
+            title: "TiltBar v\(appVersion)",
             action: #selector(openGitHub),
             keyEquivalent: "g"
         )
@@ -979,8 +995,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openGitHub() {
-        // Open the GitHub project page
-        if let url = URL(string: "https://github.com/seriousben/tiltbar") {
+        // Open the GitHub release notes page for the current version
+        if let url = URL(string: "https://github.com/seriousben/tiltbar/releases/tag/v\(releaseVersion)") {
             NSWorkspace.shared.open(url)
         }
     }

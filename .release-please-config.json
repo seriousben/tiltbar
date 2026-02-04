@@ -11,6 +11,18 @@
         {"type": "perf", "section": "Performance Improvements"},
         {"type": "docs", "section": "Documentation", "hidden": false},
         {"type": "chore", "section": "Miscellaneous", "hidden": false}
+      ],
+      "extra-files": [
+        {
+          "type": "plist",
+          "path": "Sources/TiltBar/Resources/Info.plist",
+          "key": "CFBundleShortVersionString"
+        },
+        {
+          "type": "plist",
+          "path": "Sources/TiltBar/Resources/Info.plist",
+          "key": "CFBundleVersion"
+        }
       ]
     }
   }
