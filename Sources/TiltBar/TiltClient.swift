@@ -255,33 +255,37 @@ class TiltClient {
 
     /// Main loop that maintains the connection and handles retries
     private func runWatchLoop() async {
+        print("TiltClient: Starting watch loop")
         // Keep trying to connect until the task is cancelled
         while !Task.isCancelled {
             do {
+                print("TiltClient: Connecting...")
                 updateConnectionState(.connecting)
                 try await watchResources()
+                print("TiltClient: watchResources returned normally")
             } catch is CancellationError {
                 // Task was cancelled, exit cleanly
+                print("TiltClient: Cancelled")
                 break
             } catch let error as NSError {
                 // Handle errors
                 if error.domain == NSCocoaErrorDomain && error.code == 4 {
                     // Executable not found - tilt not installed or wrong path
-                    print("Error: tilt CLI not found at \(tiltPath)")
+                    print("TiltClient: tilt CLI not found at \(tiltPath)")
                     updateConnectionState(.serverDown)
                 } else {
-                    print("Watch error: \(error)")
+                    print("TiltClient: Watch error: \(error)")
                     updateConnectionState(.disconnected)
                 }
             } catch {
                 // Other errors
                 updateConnectionState(.disconnected)
-                print("Watch error: \(error)")
+                print("TiltClient: Watch error (other): \(error)")
             }
 
             // Wait before retrying (unless cancelled)
             if !Task.isCancelled {
-                print("Retrying in \(currentRetryDelay) seconds...")
+                print("TiltClient: Retrying in \(currentRetryDelay) seconds...")
                 nextRetryTime = Date().addingTimeInterval(currentRetryDelay)
                 try? await Task.sleep(for: .seconds(currentRetryDelay))
 
@@ -289,99 +293,117 @@ class TiltClient {
                 currentRetryDelay = min(currentRetryDelay * 2, maxRetryDelay)
             }
         }
+        print("TiltClient: Watch loop ended")
     }
 
     /// Watch Tilt resources by spawning the tilt CLI
-    /// This runs `tilt get uiresource -w -o json` and processes its output line by line
+    /// This runs `tilt get uiresource -w -o json` and processes its output
     private func watchResources() async throws {
         // Create a new process
         let newProcess = Process()
         newProcess.executableURL = URL(fileURLWithPath: tiltPath)
         newProcess.arguments = ["get", "uiresource", "-w", "-o", "json"]
 
-        // Create a pipe to read the process output
-        let pipe = Pipe()
-        newProcess.standardOutput = pipe
-        newProcess.standardError = pipe
+        // Create pipes
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        newProcess.standardOutput = stdoutPipe
+        newProcess.standardError = stderrPipe
 
         // Store the process
         process = newProcess
 
-        // Start the process
-        try newProcess.run()
+        // Use continuation to bridge callback-based API to async/await
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            var jsonBuffer: [String] = []
+            var braceDepth = 0
+            var lineBuffer = ""
+            var continuationResumed = false
 
-        // Process started, but don't reset retry delay yet
-        // We'll only reset it when we successfully parse a resource (truly connected)
-        nextRetryTime = nil
+            // Handle stdout data
+            stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+                let data = handle.availableData
 
-        // Read output line by line
-        // We use FileHandle's async bytes sequence to read data as it arrives
-        let handle = pipe.fileHandleForReading
-
-        // Buffer to accumulate lines for a complete JSON object
-        // The output is pretty-printed, so we need to buffer until we have a complete object
-        var jsonBuffer: [String] = []
-        var braceDepth = 0
-
-        // Read the output asynchronously
-        for try await line in handle.tiltBytes.lines {
-            // Skip empty lines when not inside an object
-            if line.isEmpty && braceDepth == 0 {
-                continue
-            }
-
-            // Add line to buffer
-            jsonBuffer.append(line)
-
-            // Count braces to track JSON object depth
-            for char in line {
-                if char == "{" {
-                    braceDepth += 1
-                } else if char == "}" {
-                    braceDepth -= 1
+                if data.isEmpty {
+                    // EOF - pipe closed
+                    return
                 }
-            }
 
-            // When we return to depth 0, we have a complete JSON object
-            if braceDepth == 0 && !jsonBuffer.isEmpty {
-                let jsonString = jsonBuffer.joined(separator: "\n")
+                guard let text = String(data: data, encoding: .utf8) else { return }
 
-                // Parse the complete JSON object
-                do {
-                    let data = Data(jsonString.utf8)
-                    let resource = try JSONDecoder().decode(UIResource.self, from: data)
+                // Process character by character to handle lines
+                for char in text {
+                    if char == "\n" {
+                        let line = lineBuffer
+                        lineBuffer = ""
 
-                    // Successfully parsed a resource! Now we're truly connected
-                    if connectionState != .connected {
-                        // Reset retry delay now that we're successfully connected
-                        currentRetryDelay = initialRetryDelay
-                        updateConnectionState(.connected)
+                        // Skip empty lines when not inside an object
+                        if line.isEmpty && braceDepth == 0 {
+                            continue
+                        }
+
+                        jsonBuffer.append(line)
+
+                        // Count braces
+                        for c in line {
+                            if c == "{" { braceDepth += 1 }
+                            else if c == "}" { braceDepth -= 1 }
+                        }
+
+                        // Complete JSON object
+                        if braceDepth == 0 && !jsonBuffer.isEmpty {
+                            let jsonString = jsonBuffer.joined(separator: "\n")
+                            jsonBuffer.removeAll()
+
+                            do {
+                                let jsonData = Data(jsonString.utf8)
+                                let resource = try JSONDecoder().decode(UIResource.self, from: jsonData)
+
+                                // Successfully connected
+                                if self?.connectionState != .connected {
+                                    self?.currentRetryDelay = self?.initialRetryDelay ?? 1.0
+                                    self?.updateConnectionState(.connected)
+                                }
+
+                                self?.handleResourceUpdate(resource)
+                            } catch {
+                                print("TiltClient: Failed to parse: \(error)")
+                            }
+                        }
+                    } else if char != "\r" {
+                        lineBuffer.append(char)
                     }
-
-                    handleResourceUpdate(resource)
-                } catch {
-                    print("Failed to parse UIResource: \(error)")
-                    print("JSON was: \(jsonString.prefix(200))...")
                 }
-
-                // Reset buffer for next object
-                jsonBuffer.removeAll()
             }
 
-            // Check if the task was cancelled
-            if Task.isCancelled {
-                break
-            }
-        }
+            // Handle process termination
+            newProcess.terminationHandler = { process in
+                // Clean up handlers
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
 
-        // Process exited
-        if !Task.isCancelled {
-            // Only consider this an error if we weren't cancelled
-            throw NSError(
-                domain: "TiltClient",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "tilt process exited unexpectedly"]
-            )
+                guard !continuationResumed else { return }
+                continuationResumed = true
+
+                if process.terminationStatus != 0 {
+                    let stderrData = stderrPipe.fileHandleForReading.availableData
+                    let stderrText = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let msg = stderrText.isEmpty ? "exit code \(process.terminationStatus)" : stderrText
+                    print("TiltClient: tilt exited: \(msg)")
+                    continuation.resume(throwing: NSError(domain: "TiltClient", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: msg]))
+                } else {
+                    print("TiltClient: tilt exited normally")
+                    continuation.resume(throwing: NSError(domain: "TiltClient", code: 0, userInfo: [NSLocalizedDescriptionKey: "tilt process exited"]))
+                }
+            }
+
+            // Start the process
+            do {
+                try newProcess.run()
+                nextRetryTime = nil
+            } catch {
+                continuationResumed = true
+                continuation.resume(throwing: error)
+            }
         }
     }
 
@@ -650,93 +672,4 @@ class TiltClient {
     }
 }
 
-// MARK: - Extensions
 
-extension FileHandle {
-    /// AsyncSequence that yields lines from the file handle
-    var tiltBytes: TiltAsyncBytes {
-        TiltAsyncBytes(fileHandle: self)
-    }
-}
-
-/// AsyncSequence that reads bytes from a FileHandle
-struct TiltAsyncBytes: AsyncSequence {
-    typealias Element = UInt8
-
-    let fileHandle: FileHandle
-
-    func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(fileHandle: fileHandle)
-    }
-
-    struct AsyncIterator: AsyncIteratorProtocol {
-        let fileHandle: FileHandle
-        var buffer = Data()
-
-        mutating func next() async throws -> UInt8? {
-            // Read more data if buffer is empty
-            if buffer.isEmpty {
-                let data = fileHandle.availableData
-                if data.isEmpty {
-                    return nil
-                }
-                buffer = data
-            }
-
-            // Return the next byte
-            let byte = buffer.removeFirst()
-            return byte
-        }
-    }
-}
-
-/// Extension to split async bytes into lines
-extension AsyncSequence where Element == UInt8 {
-    var lines: AsyncLineSequence<Self> {
-        AsyncLineSequence(base: self)
-    }
-}
-
-struct AsyncLineSequence<Base: AsyncSequence>: AsyncSequence where Base.Element == UInt8 {
-    typealias Element = String
-
-    let base: Base
-
-    func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(base: base.makeAsyncIterator())
-    }
-
-    struct AsyncIterator: AsyncIteratorProtocol {
-        var base: Base.AsyncIterator
-        var buffer = Data()
-
-        mutating func next() async throws -> String? {
-            while true {
-                // Try to get the next byte
-                guard let byte = try await base.next() else {
-                    // No more data - return any remaining buffer as a line
-                    if buffer.isEmpty {
-                        return nil
-                    }
-                    let line = String(data: buffer, encoding: .utf8) ?? ""
-                    buffer.removeAll()
-                    return line.isEmpty ? nil : line
-                }
-
-                // Check for newline
-                if byte == UInt8(ascii: "\n") {
-                    // Found a complete line
-                    let line = String(data: buffer, encoding: .utf8) ?? ""
-                    buffer.removeAll()
-                    return line
-                } else if byte == UInt8(ascii: "\r") {
-                    // Skip carriage return
-                    continue
-                } else {
-                    // Add to buffer
-                    buffer.append(byte)
-                }
-            }
-        }
-    }
-}
