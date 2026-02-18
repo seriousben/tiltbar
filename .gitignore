@@ -11,5 +11,8 @@ xcuserdata/
 DerivedData/
 *.xcworkspace
 
+# Auto-generated build info
+Sources/TiltBar/BuildInfo.swift
+
 # Note: Tilt icons are now bundled in the repository for Homebrew distribution
 # docs/tilt-logo.png is kept for README
