@@ -13,7 +13,10 @@
         {"type": "chore", "section": "Miscellaneous", "hidden": false}
       ],
       "extra-files": [
-        "Sources/TiltBar/Resources/Info.plist"
+        {
+          "type": "generic",
+          "path": "Sources/TiltBar/Resources/Info.plist"
+        }
       ]
     }
   }
