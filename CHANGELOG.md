@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.0](https://github.com/seriousben/tiltbar/compare/v1.4.0...v1.5.0) (2026-02-18)
+
+
+### Features
+
+* show waiting-on details for pending resources ([fc62757](https://github.com/seriousben/tiltbar/commit/fc627576b1eafdd2c246df91b5a7dd131fe65197))
+
+
+### Bug Fixes
+
+* resolve watch loop not retrying after tilt disconnects ([7269990](https://github.com/seriousben/tiltbar/commit/72699902d7ff68667827f0f87f2d895588b21876))
+
 ## [1.4.0](https://github.com/seriousben/tiltbar/compare/v1.3.0...v1.4.0) (2026-02-04)
 
 
