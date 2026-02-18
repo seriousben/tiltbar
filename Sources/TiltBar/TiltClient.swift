@@ -1,13 +1,24 @@
 import Foundation
 
+/// Timestamp-prefixed log for TiltClient diagnostics.
+private func tiltLog(_ message: String) {
+    let now = Date()
+    let formatter = DateFormatter()
+    formatter.dateFormat = "HH:mm:ss.SSS"
+    print("\(formatter.string(from: now)) TiltClient: \(message)")
+}
+
 /// TiltClient manages the connection to Tilt by using the `tilt` CLI
 ///
 /// ## How it works:
 /// 1. Spawns `tilt get uiresource -w -o json` as a subprocess
-/// 2. Reads JSON output line-by-line (pretty-printed, multi-line JSON)
+/// 2. Reads JSON output using `FileHandle.bytes.lines` (native Swift async I/O)
 /// 3. Buffers lines and tracks brace depth to detect complete JSON objects
 /// 4. Parses UIResource objects and aggregates their status
 /// 5. Auto-reconnects with exponential backoff if the process exits
+///
+/// A terminationHandler safety net force-closes the pipe if the process exits
+/// without delivering EOF, guaranteeing the read loop always terminates.
 ///
 /// This approach is simpler than implementing Tilt's Protobuf+WebSocket protocol
 /// and leverages the official Tilt CLI for maximum compatibility.
@@ -37,6 +48,13 @@ class TiltClient {
     /// Task that's currently running the watch connection
     private var watchTask: Task<Void, Never>?
 
+    /// Task that clears stale state after a grace period on disconnect.
+    /// Cancelled if we reconnect before it fires.
+    private var staleClearTask: Task<Void, Never>?
+
+    /// How long to wait after disconnect before clearing stale resource data
+    private let staleClearDelay: TimeInterval = 5.0
+
     /// The running tilt process
     private var process: Process?
 
@@ -49,8 +67,8 @@ class TiltClient {
     /// List of resources currently in progress (sorted by dependent count, max 5)
     private var inProgressResources: [InProgressInfo] = []
 
-    /// List of pending resources that are blocking others (sorted by dependent count, max 5)
-    private var pendingBlockers: [PendingBlockerInfo] = []
+    /// List of resources that are pending but not actively building
+    private var pendingResources: [PendingResourceInfo] = []
 
     /// Dependency graph: maps resource name to list of resources that depend on it
     /// (reverse dependency map - used to count how many resources are waiting)
@@ -73,8 +91,8 @@ class TiltClient {
     /// Called when the list of in-progress resources changes
     var onInProgressUpdate: (([InProgressInfo]) -> Void)?
 
-    /// Called when the list of pending blockers changes
-    var onPendingBlockersUpdate: (([PendingBlockerInfo]) -> Void)?
+    /// Called when the list of pending resources changes
+    var onPendingResourcesUpdate: (([PendingResourceInfo]) -> Void)?
 
     // MARK: - Initialization
 
@@ -90,9 +108,12 @@ class TiltClient {
         // Cancel any existing watch
         stop()
 
-        // Start a new watch task
-        watchTask = Task {
-            await runWatchLoop()
+        // Start a new watch task.
+        // Use Task.detached so the watch loop does NOT inherit the main actor.
+        // If it inherited the main actor, any blocking call elsewhere on the
+        // main actor (e.g. waitUntilExit) would freeze the for-await loop.
+        watchTask = Task.detached { [weak self] in
+            await self?.runWatchLoop()
         }
     }
 
@@ -100,6 +121,7 @@ class TiltClient {
     func stop() {
         watchTask?.cancel()
         watchTask = nil
+        cancelStaleClear()
 
         // Stop the dependency refresh timer
         DispatchQueue.main.async { [weak self] in
@@ -122,9 +144,10 @@ class TiltClient {
         start()
     }
 
-    /// Trigger an update/rebuild for a specific resource
+    /// Trigger an update/rebuild for a specific resource.
+    /// Runs on a GCD queue to avoid blocking the Swift cooperative thread pool.
     func triggerUpdate(resourceName: String) {
-        Task {
+        DispatchQueue.global().async { [tiltPath] in
             do {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: tiltPath)
@@ -135,30 +158,35 @@ class TiltClient {
                 process.standardError = pipe
 
                 try process.run()
+
+                // Read pipe data before waitUntilExit to prevent pipe buffer deadlock
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
 
                 if process.terminationStatus != 0 {
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: data, encoding: .utf8) ?? ""
-                    print("Failed to trigger \(resourceName): \(output)")
+                    tiltLog("Failed to trigger \(resourceName): \(output)")
                 } else {
-                    print("Triggered update for \(resourceName)")
+                    tiltLog("Triggered update for \(resourceName)")
                 }
             } catch {
-                print("Error triggering update for \(resourceName): \(error)")
+                tiltLog("Error triggering update for \(resourceName): \(error)")
             }
         }
     }
 
-    /// Refresh the dependency graph from Tilt's engine state
+    /// Refresh the dependency graph from Tilt's engine state.
+    /// Runs on a GCD queue to avoid blocking the Swift cooperative thread pool.
     func refreshDependencyGraph() {
-        Task {
-            await fetchDependencyGraph()
+        DispatchQueue.global().async { [weak self] in
+            self?.fetchDependencyGraph()
         }
     }
 
-    /// Fetch and build the dependency graph (reverse mapping)
-    private func fetchDependencyGraph() async {
+    /// Fetch and build the dependency graph (reverse mapping).
+    /// Called on a GCD queue — all calls here are synchronous/blocking, which is
+    /// safe on GCD but would starve the Swift cooperative thread pool.
+    private func fetchDependencyGraph() {
         do {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: tiltPath)
@@ -169,13 +197,17 @@ class TiltClient {
             process.standardError = FileHandle.nullDevice
 
             try process.run()
+
+            // Read pipe data BEFORE waitUntilExit to prevent pipe buffer deadlock:
+            // if the process outputs >64KB, the pipe buffer fills, the process blocks
+            // on write, and waitUntilExit would wait forever.
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
 
             guard process.terminationStatus == 0 else {
+                tiltLog("dependency graph fetch failed (exit \(process.terminationStatus))")
                 return
             }
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
             // Parse the JSON to extract dependencies
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -212,7 +244,7 @@ class TiltClient {
                 self?.updateInProgressSorting()
             }
         } catch {
-            print("Error fetching dependency graph: \(error)")
+            tiltLog("Error fetching dependency graph: \(error)")
         }
     }
 
@@ -234,70 +266,116 @@ class TiltClient {
 
         // Emit update
         emitInProgress()
+    }
 
-        // Update dependent counts for pending blockers
-        for i in 0..<pendingBlockers.count {
-            let resourceName = pendingBlockers[i].resourceName
-            pendingBlockers[i].dependentCount = dependentsMap[resourceName]?.count ?? 0
+    /// Schedule clearing stale data after a grace period.
+    /// Resets any previously scheduled clear.
+    private func scheduleStaleClear() {
+        staleClearTask?.cancel()
+        staleClearTask = Task {
+            try? await Task.sleep(for: .seconds(staleClearDelay))
+            guard !Task.isCancelled else { return }
+            clearResourceState()
         }
+    }
 
-        // Remove any that no longer have dependents
-        pendingBlockers.removeAll { $0.dependentCount == 0 }
+    /// Cancel any pending stale-data clear (called on successful reconnect)
+    private func cancelStaleClear() {
+        staleClearTask?.cancel()
+        staleClearTask = nil
+    }
 
-        // Sort by dependent count (descending)
-        pendingBlockers.sort { $0.dependentCount > $1.dependentCount }
+    /// Clear all tracked resource state to prevent showing stale data after disconnect
+    private func clearResourceState() {
+        resources.removeAll()
+        recentFailures.removeAll()
+        inProgressResources.removeAll()
+        pendingResources.removeAll()
+        dependentsMap.removeAll()
 
-        // Emit update
-        emitPendingBlockers()
+        // Notify UI with empty state
+        emitStatus()
+        emitFailures()
+        emitInProgress()
+        emitPendingResources()
     }
 
     // MARK: - Watch Loop
 
     /// Main loop that maintains the connection and handles retries
     private func runWatchLoop() async {
-        print("TiltClient: Starting watch loop")
+        tiltLog("Starting watch loop")
+        defer { tiltLog("Watch loop ended (isCancelled: \(Task.isCancelled))") }
+
         // Keep trying to connect until the task is cancelled
         while !Task.isCancelled {
             do {
-                print("TiltClient: Connecting...")
+                tiltLog("Connecting...")
                 updateConnectionState(.connecting)
                 try await watchResources()
-                print("TiltClient: watchResources returned normally")
+                tiltLog("watchResources returned normally")
             } catch is CancellationError {
                 // Task was cancelled, exit cleanly
-                print("TiltClient: Cancelled")
+                tiltLog("Cancelled")
                 break
             } catch let error as NSError {
+                // Schedule clearing stale data after a grace period.
+                // If we reconnect quickly the clear is cancelled,
+                // avoiding a flash of empty state.
+                scheduleStaleClear()
+
                 // Handle errors
                 if error.domain == NSCocoaErrorDomain && error.code == 4 {
                     // Executable not found - tilt not installed or wrong path
-                    print("TiltClient: tilt CLI not found at \(tiltPath)")
+                    tiltLog("tilt CLI not found at \(tiltPath)")
                     updateConnectionState(.serverDown)
                 } else {
-                    print("TiltClient: Watch error: \(error)")
+                    tiltLog("Watch error: \(error)")
                     updateConnectionState(.disconnected)
                 }
             } catch {
+                // Schedule clearing stale data after a grace period
+                scheduleStaleClear()
+
                 // Other errors
                 updateConnectionState(.disconnected)
-                print("TiltClient: Watch error (other): \(error)")
+                tiltLog("Watch error (other): \(error)")
             }
 
             // Wait before retrying (unless cancelled)
-            if !Task.isCancelled {
-                print("TiltClient: Retrying in \(currentRetryDelay) seconds...")
-                nextRetryTime = Date().addingTimeInterval(currentRetryDelay)
-                try? await Task.sleep(for: .seconds(currentRetryDelay))
-
-                // Exponential backoff up to maxRetryDelay
-                currentRetryDelay = min(currentRetryDelay * 2, maxRetryDelay)
+            guard !Task.isCancelled else {
+                tiltLog("Task cancelled, skipping retry")
+                break
             }
+
+            tiltLog("Retrying in \(currentRetryDelay) seconds...")
+            nextRetryTime = Date().addingTimeInterval(currentRetryDelay)
+
+            do {
+                // Use nanoseconds API for reliability across all macOS 13.x versions
+                // (Duration-based Task.sleep had issues on early macOS 13 releases)
+                try await Task.sleep(nanoseconds: UInt64(currentRetryDelay * 1_000_000_000))
+            } catch {
+                tiltLog("Sleep interrupted (isCancelled: \(Task.isCancelled)): \(error)")
+                // If cancelled, the while loop condition will handle exiting
+                if Task.isCancelled {
+                    break
+                }
+                // For any other unexpected error, continue with retry immediately
+            }
+
+            // Exponential backoff up to maxRetryDelay
+            currentRetryDelay = min(currentRetryDelay * 2, maxRetryDelay)
         }
-        print("TiltClient: Watch loop ended")
     }
 
-    /// Watch Tilt resources by spawning the tilt CLI
-    /// This runs `tilt get uiresource -w -o json` and processes its output
+    /// Watch Tilt resources by spawning the tilt CLI.
+    /// This runs `tilt get uiresource -w -o json` and processes its output.
+    ///
+    /// Uses FileHandle.bytes.lines (native Swift async I/O) to read process
+    /// output. A terminationHandler acts as a safety net: if the pipe doesn't
+    /// close promptly after the process exits, it force-closes the read end
+    /// to guarantee the read loop terminates and reconnection can proceed.
     private func watchResources() async throws {
         // Create a new process
         let newProcess = Process()
@@ -313,98 +391,101 @@ class TiltClient {
         // Store the process
         process = newProcess
 
-        // Use continuation to bridge callback-based API to async/await
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var jsonBuffer: [String] = []
-            var braceDepth = 0
-            var lineBuffer = ""
-            var continuationResumed = false
+        // Safety net: when the process exits, force-close the pipe's read end
+        // after a short delay. Normally EOF arrives immediately when the process
+        // exits, but this guard prevents the read loop from hanging indefinitely
+        // if the pipe doesn't close for any reason (e.g., the process exits
+        // before the for-await loop begins iterating).
+        newProcess.terminationHandler = { proc in
+            if proc.terminationStatus != 0 {
+                let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                let stderrText = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let msg = stderrText.isEmpty ? "exit code \(proc.terminationStatus)" : stderrText
+                tiltLog("tilt exited: \(msg)")
+            } else {
+                tiltLog("tilt exited normally")
+            }
 
-            // Handle stdout data
-            stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-                let data = handle.availableData
+            // Force-close the read end after a delay to unblock the read loop.
+            // If EOF already arrived, the close is harmless (throws, caught by try?).
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
+                try? stdoutPipe.fileHandleForReading.close()
+            }
+        }
 
-                if data.isEmpty {
-                    // EOF - pipe closed
-                    return
+        // Start the process
+        try newProcess.run()
+
+        // Process started successfully
+        nextRetryTime = nil
+
+        // Read lines using Swift's native async byte sequence.
+        // This replaces the previous readabilityHandler + AsyncStream bridge,
+        // which had a race condition: if the process exited before the for-await
+        // loop began iterating, the stream's finish() signal could be lost,
+        // causing the read loop to hang forever and preventing reconnection.
+        var jsonBuffer: [String] = []
+        var braceDepth = 0
+
+        do {
+            for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
+                // Skip empty lines outside JSON objects
+                if line.isEmpty && braceDepth == 0 {
+                    continue
                 }
 
-                guard let text = String(data: data, encoding: .utf8) else { return }
+                jsonBuffer.append(String(line))
 
-                // Process character by character to handle lines
-                for char in text {
-                    if char == "\n" {
-                        let line = lineBuffer
-                        lineBuffer = ""
+                // Track brace depth to detect complete JSON objects
+                for c in line {
+                    if c == "{" { braceDepth += 1 }
+                    else if c == "}" { braceDepth -= 1 }
+                }
 
-                        // Skip empty lines when not inside an object
-                        if line.isEmpty && braceDepth == 0 {
-                            continue
+                // Complete JSON object detected
+                if braceDepth == 0 && !jsonBuffer.isEmpty {
+                    let jsonString = jsonBuffer.joined(separator: "\n")
+                    jsonBuffer.removeAll()
+
+                    do {
+                        let jsonData = Data(jsonString.utf8)
+                        let resource = try JSONDecoder().decode(UIResource.self, from: jsonData)
+
+                        // First successful parse means we're truly connected
+                        if connectionState != .connected {
+                            tiltLog("Connected")
+                            currentRetryDelay = initialRetryDelay
+                            updateConnectionState(.connected)
                         }
 
-                        jsonBuffer.append(line)
-
-                        // Count braces
-                        for c in line {
-                            if c == "{" { braceDepth += 1 }
-                            else if c == "}" { braceDepth -= 1 }
-                        }
-
-                        // Complete JSON object
-                        if braceDepth == 0 && !jsonBuffer.isEmpty {
-                            let jsonString = jsonBuffer.joined(separator: "\n")
-                            jsonBuffer.removeAll()
-
-                            do {
-                                let jsonData = Data(jsonString.utf8)
-                                let resource = try JSONDecoder().decode(UIResource.self, from: jsonData)
-
-                                // Successfully connected
-                                if self?.connectionState != .connected {
-                                    self?.currentRetryDelay = self?.initialRetryDelay ?? 1.0
-                                    self?.updateConnectionState(.connected)
-                                }
-
-                                self?.handleResourceUpdate(resource)
-                            } catch {
-                                print("TiltClient: Failed to parse: \(error)")
-                            }
-                        }
-                    } else if char != "\r" {
-                        lineBuffer.append(char)
+                        handleResourceUpdate(resource)
+                    } catch {
+                        tiltLog("Failed to parse: \(error)")
                     }
                 }
             }
-
-            // Handle process termination
-            newProcess.terminationHandler = { process in
-                // Clean up handlers
-                stdoutPipe.fileHandleForReading.readabilityHandler = nil
-
-                guard !continuationResumed else { return }
-                continuationResumed = true
-
-                if process.terminationStatus != 0 {
-                    let stderrData = stderrPipe.fileHandleForReading.availableData
-                    let stderrText = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    let msg = stderrText.isEmpty ? "exit code \(process.terminationStatus)" : stderrText
-                    print("TiltClient: tilt exited: \(msg)")
-                    continuation.resume(throwing: NSError(domain: "TiltClient", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: msg]))
-                } else {
-                    print("TiltClient: tilt exited normally")
-                    continuation.resume(throwing: NSError(domain: "TiltClient", code: 0, userInfo: [NSLocalizedDescriptionKey: "tilt process exited"]))
-                }
-            }
-
-            // Start the process
-            do {
-                try newProcess.run()
-                nextRetryTime = nil
-            } catch {
-                continuationResumed = true
-                continuation.resume(throwing: error)
-            }
+            tiltLog("stdout reached EOF")
+        } catch is CancellationError {
+            tiltLog("watch cancelled")
+            throw CancellationError()
+        } catch {
+            // bytes.lines throws when the file handle is closed (our safety net)
+            // or on other I/O errors — this is expected when the process exits
+            tiltLog("pipe read ended: \(error)")
         }
+
+        // Ensure the process is stopped
+        if newProcess.isRunning {
+            newProcess.terminate()
+        }
+
+        // Trigger reconnection
+        tiltLog("watch ended, will reconnect")
+        throw NSError(
+            domain: "TiltClient",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "tilt watch ended"]
+        )
     }
 
     // MARK: - Event Handling
@@ -416,8 +497,9 @@ class TiltClient {
         // Update our local cache
         resources[resourceName] = resource
 
-        // Track failures and in-progress resources
+        // Track failures, in-progress, and pending resources
         trackResourceStatus(resource)
+        trackPendingStatus(resource)
 
         // Recalculate and emit the aggregated status
         emitStatus()
@@ -534,55 +616,47 @@ class TiltClient {
 
             // Emit in-progress update
             emitInProgress()
-
-            // Remove from pending blockers if it was there (now actively updating)
-            if let index = pendingBlockers.firstIndex(where: { $0.resourceName == resourceName }) {
-                pendingBlockers.remove(at: index)
-                emitPendingBlockers()
-            }
         } else {
             // Resource is not actively updating - remove from in-progress list if present
             if let index = inProgressResources.firstIndex(where: { $0.resourceName == resourceName }) {
                 inProgressResources.remove(at: index)
                 emitInProgress()
             }
+        }
+    }
 
-            // Check if this is a pending blocker (not ok/ready and has dependents)
-            let dependentCount = dependentsMap[resourceName]?.count ?? 0
-            let isPending = status == .inProgress  // Pending status (not actively building)
-            let isBlockingOthers = dependentCount > 0
+    /// Track pending resources: those with inProgress status but not actively building.
+    /// This catches all pending resources regardless of whether they have waiting.on info.
+    private func trackPendingStatus(_ resource: UIResource) {
+        let resourceName = resource.metadata.name
+        let status = resource.determineStatus()
+        let isActivelyBuilding = resource.status?.currentBuild != nil
 
-            if isPending && isBlockingOthers {
-                // Add or update in pending blockers
-                if let existingIndex = pendingBlockers.firstIndex(where: { $0.resourceName == resourceName }) {
-                    pendingBlockers[existingIndex] = PendingBlockerInfo(
-                        resourceName: resourceName,
-                        dependentCount: dependentCount
-                    )
-                } else {
-                    pendingBlockers.append(
-                        PendingBlockerInfo(
-                            resourceName: resourceName,
-                            dependentCount: dependentCount
-                        )
-                    )
-                }
+        // Pending = shows as inProgress but not actively building
+        if status == .inProgress && !isActivelyBuilding {
+            let waiting = resource.status?.waiting
+            let waitingOnNames = waiting?.on?.compactMap { $0.name } ?? []
+            let info = PendingResourceInfo(
+                resourceName: resourceName,
+                waitingOn: waitingOnNames,
+                reason: waiting?.reason
+            )
 
-                // Sort by dependent count (descending)
-                pendingBlockers.sort { $0.dependentCount > $1.dependentCount }
-
-                // Keep only the top 5
-                if pendingBlockers.count > 5 {
-                    pendingBlockers = Array(pendingBlockers.prefix(5))
-                }
-
-                emitPendingBlockers()
+            if let existingIndex = pendingResources.firstIndex(where: { $0.resourceName == resourceName }) {
+                pendingResources[existingIndex] = info
             } else {
-                // Not a pending blocker - remove if present
-                if let index = pendingBlockers.firstIndex(where: { $0.resourceName == resourceName }) {
-                    pendingBlockers.remove(at: index)
-                    emitPendingBlockers()
-                }
+                pendingResources.append(info)
+            }
+
+            // Sort alphabetically
+            pendingResources.sort { $0.resourceName < $1.resourceName }
+
+            emitPendingResources()
+        } else {
+            // No longer pending — remove if present
+            if let index = pendingResources.firstIndex(where: { $0.resourceName == resourceName }) {
+                pendingResources.remove(at: index)
+                emitPendingResources()
             }
         }
     }
@@ -605,12 +679,11 @@ class TiltClient {
         }
     }
 
-    /// Notify the callback with the current list of pending blockers
-    private func emitPendingBlockers() {
-        // Notify on the main thread (since this will update UI)
+    /// Notify the callback with the current list of pending resources
+    private func emitPendingResources() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.onPendingBlockersUpdate?(self.pendingBlockers)
+            self.onPendingResourcesUpdate?(self.pendingResources)
         }
     }
 
@@ -650,6 +723,9 @@ class TiltClient {
             guard let self = self else { return }
 
             if newState == .connected {
+                // Reconnected in time - cancel any pending stale-data clear
+                self.cancelStaleClear()
+
                 // Fetch dependency graph immediately on connect
                 self.refreshDependencyGraph()
 
