@@ -6,4 +6,4 @@
 let isDevelopmentBuild = true
 
 /// Short git commit hash (empty for release builds)
-let gitCommitHash = "1e4fc02"
+let gitCommitHash = "483aa26"
