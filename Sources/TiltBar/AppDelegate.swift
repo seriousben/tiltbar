@@ -57,8 +57,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Current list of in-progress resources
     private var currentInProgress: [InProgressInfo] = []
 
-    /// Current list of pending blockers
-    private var currentPendingBlockers: [PendingBlockerInfo] = []
+
+
+    /// Current list of pending resources (not actively building)
+    private var currentPendingResources: [PendingResourceInfo] = []
 
     /// Cached Tilt icons
     private var grayIcon: NSImage?
@@ -139,8 +141,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.handleInProgressUpdate(inProgress)
         }
 
-        tiltClient.onPendingBlockersUpdate = { [weak self] pendingBlockers in
-            self?.handlePendingBlockersUpdate(pendingBlockers)
+        tiltClient.onPendingResourcesUpdate = { [weak self] pendingResources in
+            self?.handlePendingResourcesUpdate(pendingResources)
         }
 
         // Start watching Tilt
@@ -233,26 +235,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusMenuItem.tag = 100 // Tag to find it later
         menu.addItem(statusMenuItem)
 
-        // In Progress section (populated dynamically)
-        // Tag 103 marks the start of the in-progress section
-        let inProgressSectionStart = NSMenuItem.separator()
-        inProgressSectionStart.tag = 103
-        inProgressSectionStart.isHidden = true // Initially hidden, shown when in-progress resources exist
-        menu.addItem(inProgressSectionStart)
-
-        // Pending Blockers section (populated dynamically)
-        // Tag 104 marks the start of the pending blockers section
-        let pendingSectionStart = NSMenuItem.separator()
-        pendingSectionStart.tag = 104
-        pendingSectionStart.isHidden = true // Initially hidden, shown when pending blockers exist
-        menu.addItem(pendingSectionStart)
-
-        // Recent Failures section (populated dynamically)
+        // Failures section (populated dynamically)
         // Tag 102 marks the start of the failures section
         let failuresSectionStart = NSMenuItem.separator()
         failuresSectionStart.tag = 102
-        failuresSectionStart.isHidden = true // Initially hidden, shown when failures exist
+        failuresSectionStart.isHidden = true
         menu.addItem(failuresSectionStart)
+
+        // Updating section (populated dynamically) — actively building resources
+        // Tag 103 marks the start of the updating section
+        let updatingSectionStart = NSMenuItem.separator()
+        updatingSectionStart.tag = 103
+        updatingSectionStart.isHidden = true
+        menu.addItem(updatingSectionStart)
+
+        // Waiting section (populated dynamically) — pending resources not actively building
+        // Tag 105 marks the start of the waiting section
+        let waitingSectionStart = NSMenuItem.separator()
+        waitingSectionStart.tag = 105
+        waitingSectionStart.isHidden = true
+        menu.addItem(waitingSectionStart)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -492,11 +494,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func handlePendingBlockersUpdate(_ pendingBlockers: [PendingBlockerInfo]) {
+    private func handlePendingResourcesUpdate(_ pendingResources: [PendingResourceInfo]) {
         // Ignore live updates when in development mode
         if developmentMode == .live {
-            currentPendingBlockers = pendingBlockers
-            updatePendingBlockersInMenu()
+            currentPendingResources = pendingResources
+            updatePendingResourcesInMenu()
         }
     }
 
@@ -767,7 +769,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
 
             // Remove extra items if the list shrank
-            for index in currentInProgress.count..<5 {
+            for index in min(currentInProgress.count, 5)..<5 {
                 let itemTag = firstItemTag + index
                 if let item = menu.item(withTag: itemTag) {
                     menu.removeItem(item)
@@ -776,88 +778,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             // No in-progress resources, hide the separator and remove all items
             if let separator = menu.item(withTag: 103) {
-                separator.isHidden = true
-            }
-            if let header = menu.item(withTag: headerTag) {
-                menu.removeItem(header)
-            }
-            for index in 0..<5 {
-                let itemTag = firstItemTag + index
-                if let item = menu.item(withTag: itemTag) {
-                    menu.removeItem(item)
-                }
-            }
-        }
-    }
-
-    /// Update the Pending Blockers section in the menu
-    /// Uses in-place updates to avoid flickering
-    private func updatePendingBlockersInMenu() {
-        guard let menu = statusItem?.menu else { return }
-
-        // Find the pending section separator (tag 104)
-        guard let pendingSectionIndex = menu.items.firstIndex(where: { $0.tag == 104 }) else {
-            return
-        }
-
-        // Tags for pending items: 1040 = header, 1041-1045 = items
-        let headerTag = 1040
-        let firstItemTag = 1041
-
-        if !currentPendingBlockers.isEmpty {
-            // Show the separator
-            if let separator = menu.item(withTag: 104) {
-                separator.isHidden = false
-            }
-
-            // Add or update header with count
-            let headerTitle = "Pending: \(currentPendingBlockers.count)"
-            if let existingHeader = menu.item(withTag: headerTag) {
-                existingHeader.title = headerTitle
-            } else {
-                let header = NSMenuItem(
-                    title: headerTitle,
-                    action: nil,
-                    keyEquivalent: ""
-                )
-                header.isEnabled = false
-                header.tag = headerTag
-                menu.insertItem(header, at: pendingSectionIndex + 1)
-            }
-
-            // Update or add each pending blocker
-            for (index, pending) in currentPendingBlockers.enumerated() {
-                let itemTag = firstItemTag + index
-                let title = "  \(pending.resourceName) (\(pending.dependentCount) waiting)"
-
-                if let existingItem = menu.item(withTag: itemTag) {
-                    // Update existing item in place
-                    existingItem.title = title
-                    existingItem.representedObject = pending
-                } else {
-                    // Create new item
-                    let pendingItem = NSMenuItem(
-                        title: title,
-                        action: #selector(openPendingInBrowser(_:)),
-                        keyEquivalent: ""
-                    )
-                    pendingItem.target = self
-                    pendingItem.tag = itemTag
-                    pendingItem.representedObject = pending
-                    menu.insertItem(pendingItem, at: pendingSectionIndex + 2 + index)
-                }
-            }
-
-            // Remove extra items if the list shrank
-            for index in currentPendingBlockers.count..<5 {
-                let itemTag = firstItemTag + index
-                if let item = menu.item(withTag: itemTag) {
-                    menu.removeItem(item)
-                }
-            }
-        } else {
-            // No pending blockers, hide the separator and remove all items
-            if let separator = menu.item(withTag: 104) {
                 separator.isHidden = true
             }
             if let header = menu.item(withTag: headerTag) {
@@ -962,7 +882,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
 
             // Remove extra items if the list shrank
-            for index in currentFailures.count..<5 {
+            for index in min(currentFailures.count, 5)..<5 {
                 let itemTag = firstItemTag + index
                 if let item = menu.item(withTag: itemTag) {
                     menu.removeItem(item)
@@ -977,6 +897,91 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.removeItem(header)
             }
             for index in 0..<5 {
+                let itemTag = firstItemTag + index
+                if let item = menu.item(withTag: itemTag) {
+                    menu.removeItem(item)
+                }
+            }
+        }
+    }
+
+    /// Update the Pending Resources section in the menu
+    /// Shows all resources that are pending but not actively building
+    /// Uses in-place updates to avoid flickering
+    private func updatePendingResourcesInMenu() {
+        guard let menu = statusItem?.menu else { return }
+
+        // Find the pending section separator (tag 105)
+        guard let pendingSectionIndex = menu.items.firstIndex(where: { $0.tag == 105 }) else {
+            return
+        }
+
+        // Tags for pending items: 1050 = header, 1051-1060 = items
+        let headerTag = 1050
+        let firstItemTag = 1051
+        let maxItems = 10
+
+        if !currentPendingResources.isEmpty {
+            // Show the separator
+            if let separator = menu.item(withTag: 105) {
+                separator.isHidden = false
+            }
+
+            // Add or update header with count
+            let headerTitle = "Waiting: \(currentPendingResources.count)"
+            if let existingHeader = menu.item(withTag: headerTag) {
+                existingHeader.title = headerTitle
+            } else {
+                let header = NSMenuItem(
+                    title: headerTitle,
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                header.isEnabled = false
+                header.tag = headerTag
+                menu.insertItem(header, at: pendingSectionIndex + 1)
+            }
+
+            // Update or add each pending resource
+            for (index, pending) in currentPendingResources.prefix(maxItems).enumerated() {
+                let itemTag = firstItemTag + index
+                var title = "  \(pending.resourceName)"
+                if !pending.waitingOn.isEmpty {
+                    title += " → \(pending.detail)"
+                }
+
+                if let existingItem = menu.item(withTag: itemTag) {
+                    existingItem.title = title
+                    existingItem.representedObject = pending
+                } else {
+                    let pendingItem = NSMenuItem(
+                        title: title,
+                        action: #selector(openPendingResourceInBrowser(_:)),
+                        keyEquivalent: ""
+                    )
+                    pendingItem.target = self
+                    pendingItem.tag = itemTag
+                    pendingItem.representedObject = pending
+                    menu.insertItem(pendingItem, at: pendingSectionIndex + 2 + index)
+                }
+            }
+
+            // Remove extra items if the list shrank
+            for index in min(currentPendingResources.count, maxItems)..<maxItems {
+                let itemTag = firstItemTag + index
+                if let item = menu.item(withTag: itemTag) {
+                    menu.removeItem(item)
+                }
+            }
+        } else {
+            // No pending resources, hide the separator and remove all items
+            if let separator = menu.item(withTag: 105) {
+                separator.isHidden = true
+            }
+            if let header = menu.item(withTag: headerTag) {
+                menu.removeItem(header)
+            }
+            for index in 0..<maxItems {
                 let itemTag = firstItemTag + index
                 if let item = menu.item(withTag: itemTag) {
                     menu.removeItem(item)
@@ -1043,13 +1048,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tiltClient.triggerUpdate(resourceName: resourceName)
     }
 
-    @objc private func openPendingInBrowser(_ sender: NSMenuItem) {
-        // Get the pending info from the menu item
-        guard let pending = sender.representedObject as? PendingBlockerInfo else {
+    @objc private func openPendingResourceInBrowser(_ sender: NSMenuItem) {
+        guard let pending = sender.representedObject as? PendingResourceInfo else {
             return
         }
-
-        // Open the pending resource URL in the browser
         if let url = URL(string: pending.webURL) {
             NSWorkspace.shared.open(url)
         }
