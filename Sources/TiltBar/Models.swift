@@ -55,6 +55,22 @@ struct UIResource: Codable {
             /// When this build started
             let startTime: String?
         }
+
+        /// Information about what this resource is waiting for
+        let waiting: WaitingInfo?
+
+        struct WaitingInfo: Codable {
+            /// Resources this resource is waiting on
+            let on: [WaitingOn]?
+
+            /// Human-readable reason for waiting
+            let reason: String?
+
+            struct WaitingOn: Codable {
+                /// The name of the resource being waited on
+                let name: String?
+            }
+        }
     }
 }
 
@@ -189,17 +205,31 @@ struct InProgressInfo {
     }
 }
 
-/// Information about a pending resource that is blocking others
-struct PendingBlockerInfo {
+/// Information about a resource that is pending (not actively building)
+struct PendingResourceInfo {
     /// The name of the pending resource
     let resourceName: String
 
-    /// Number of resources that depend on this resource (waiting for it)
-    var dependentCount: Int = 0
+    /// Names of resources it's waiting on (may be empty)
+    let waitingOn: [String]
+
+    /// The reason for waiting (e.g. "waiting-for-local")
+    let reason: String?
 
     /// URL to view this resource in the Tilt web UI
     var webURL: String {
         "http://localhost:10350/r/\(resourceName)/overview"
+    }
+
+    /// Short detail: what it's waiting on, or the reason, or just "pending"
+    var detail: String {
+        if !waitingOn.isEmpty {
+            if waitingOn.count == 1 {
+                return waitingOn[0]
+            }
+            return "\(waitingOn.count) resources"
+        }
+        return reason ?? "pending"
     }
 }
 
