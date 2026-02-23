@@ -14,13 +14,13 @@
     <key>CFBundleDisplayName</key>
     <string>Tilt Status Bar</string>
 
-    <!-- Bundle version -->
+    <!-- Bundle version (updated at build time by CI) -->
     <key>CFBundleVersion</key>
-    <string>1.4.0</string> <!-- x-release-please-version -->
+    <string>0.0.0-dev</string>
 
-    <!-- Short version string -->
+    <!-- Short version string (updated at build time by CI) -->
     <key>CFBundleShortVersionString</key>
-    <string>1.4.0</string> <!-- x-release-please-version -->
+    <string>0.0.0-dev</string>
 
     <!-- Package type - APPL means application -->
     <key>CFBundlePackageType</key>

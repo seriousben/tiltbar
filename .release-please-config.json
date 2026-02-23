@@ -11,12 +11,6 @@
         {"type": "perf", "section": "Performance Improvements"},
         {"type": "docs", "section": "Documentation", "hidden": false},
         {"type": "chore", "section": "Miscellaneous", "hidden": false}
-      ],
-      "extra-files": [
-        {
-          "type": "generic",
-          "path": "Sources/TiltBar/Resources/Info.plist"
-        }
       ]
     }
   }
