@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.2](https://github.com/seriousben/tiltbar/compare/v1.5.1...v1.5.2) (2026-02-23)
+
+
+### Bug Fixes
+
+* versioning ([a9c57e9](https://github.com/seriousben/tiltbar/commit/a9c57e900b60cc2cca6f4ec392de484c1dbae7f2))
+
 ## [1.5.1](https://github.com/seriousben/tiltbar/compare/v1.5.0...v1.5.1) (2026-02-18)
 
 
