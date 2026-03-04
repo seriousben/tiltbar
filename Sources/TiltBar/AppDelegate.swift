@@ -39,6 +39,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The Tilt API client
     private let tiltClient = TiltClient()
 
+    /// Persisted set of resource names the user has chosen to ignore
+    private let ignoredResourcesStore = IgnoredResourcesStore()
+
     /// Current resource status (for display)
     private var currentStatus = ResourceStatus()
 
@@ -55,6 +58,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Current list of pending resources (not actively building)
     private var currentPendingResources: [PendingResourceInfo] = []
+
+    // MARK: - Ignored Resource Filtering
+
+    /// Failures not ignored by the user (shown in "Failures" section)
+    private var visibleFailures: [FailureInfo] {
+        currentFailures.filter { !ignoredResourcesStore.isIgnored($0.resourceName) }
+    }
+
+    /// Failures the user has chosen to ignore (shown in "Ignored" section)
+    private var ignoredFailures: [FailureInfo] {
+        currentFailures.filter { ignoredResourcesStore.isIgnored($0.resourceName) }
+    }
+
+    /// Resource status adjusted so ignored errors don't count as errors
+    private var adjustedStatus: ResourceStatus {
+        let ignoredErrorCount = currentFailures.filter {
+            ignoredResourcesStore.isIgnored($0.resourceName)
+        }.count
+        var status = currentStatus
+        status.error = max(0, status.error - ignoredErrorCount)
+        status.success += ignoredErrorCount
+        return status
+    }
 
     /// Cached Tilt icons
     private var grayIcon: NSImage?
@@ -235,6 +261,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         failuresSectionStart.tag = 102
         failuresSectionStart.isHidden = true
         menu.addItem(failuresSectionStart)
+
+        // Ignored failures section (populated dynamically)
+        // Tag 104 marks the start of the ignored section
+        let ignoredSectionStart = NSMenuItem.separator()
+        ignoredSectionStart.tag = 104
+        ignoredSectionStart.isHidden = true
+        menu.addItem(ignoredSectionStart)
 
         // Updating section (populated dynamically) — actively building resources
         // Tag 103 marks the start of the updating section
@@ -476,7 +509,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Ignore live updates when in development mode
         if developmentMode == .live {
             currentFailures = failures
+
+            // Auto-remove ignored entries for resources that have recovered
+            let currentFailureNames = Set(failures.map { $0.resourceName })
+            ignoredResourcesStore.removeRecovered(currentFailureNames: currentFailureNames)
+
             updateFailuresInMenu()
+            updateIgnoredInMenu()
+            // Refresh display since adjusted error count may have changed
+            updateDisplay()
         }
     }
 
@@ -522,14 +563,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateDisplay() {
+        let displayStatus = developmentMode == .live ? adjustedStatus : currentStatus
+
         // Update the status bar button icon and text
         if let button = statusItem?.button {
             // Choose the appropriate icon and animate the transition
-            let newIcon = chooseIcon()
+            let newIcon = chooseIcon(for: displayStatus)
             setIconWithAnimation(newIcon, button: button)
 
             // Set the title text with colors
-            let attributedText = buildStatusBarAttributedText()
+            let attributedText = buildStatusBarAttributedText(for: displayStatus)
             if attributedText.length > 0 {
                 button.attributedTitle = attributedText
             } else {
@@ -540,7 +583,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Update the status menu item
         if let menu = statusItem?.menu,
            let statusMenuItem = menu.item(withTag: 100) {
-            statusMenuItem.title = buildStatusText()
+            statusMenuItem.title = buildStatusText(for: displayStatus)
         }
 
         // Update reconnect button visibility
@@ -556,7 +599,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Red logo: if errors > 0
     /// Yellow logo: if warnings > 0 but no errors
     /// Green logo: otherwise (all success, when connected)
-    private func chooseIcon() -> NSImage? {
+    private func chooseIcon(for status: ResourceStatus) -> NSImage? {
         // ALWAYS check connection state first - if not connected, MUST be gray
         if currentConnectionState != .connected {
             return grayIcon
@@ -564,12 +607,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Only when connected do we check resource status for colors
         // If there are errors, show red logo
-        if currentStatus.error > 0 {
+        if status.error > 0 {
             return redIcon
         }
 
         // If there are warnings (but no errors), show yellow logo
-        if currentStatus.warning > 0 {
+        if status.warning > 0 {
             return yellowIcon
         }
 
@@ -580,7 +623,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Build the attributed text to show in the status bar with colored numbers
     /// Format: red yellow inprogress green (only showing counts > 0)
     /// Only shows numbers, never any text labels
-    private func buildStatusBarAttributedText() -> NSAttributedString {
+    private func buildStatusBarAttributedText(for status: ResourceStatus) -> NSAttributedString {
         let result = NSMutableAttributedString()
 
         // Add leading space for padding
@@ -592,12 +635,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return NSAttributedString(string: "")
         case .connected:
             // If everything is green/successful, show no text (just icon)
-            if currentStatus.error == 0 && currentStatus.warning == 0 && currentStatus.inProgress == 0 && currentStatus.success > 0 {
+            if status.error == 0 && status.warning == 0 && status.inProgress == 0 && status.success > 0 {
                 return NSAttributedString(string: "")
             }
 
             // If no resources, still just show icon (no text)
-            if currentStatus.total == 0 {
+            if status.total == 0 {
                 return NSAttributedString(string: "")
             }
 
@@ -605,36 +648,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var parts: [NSAttributedString] = []
 
             // Red count (errors) - only show if > 0
-            if currentStatus.error > 0 {
+            if status.error > 0 {
                 let errorText = NSAttributedString(
-                    string: "\(currentStatus.error)",
+                    string: "\(status.error)",
                     attributes: [.foregroundColor: NSColor.red]
                 )
                 parts.append(errorText)
             }
 
             // Yellow count (warnings) - only show if > 0
-            if currentStatus.warning > 0 {
+            if status.warning > 0 {
                 let warningText = NSAttributedString(
-                    string: "\(currentStatus.warning)",
+                    string: "\(status.warning)",
                     attributes: [.foregroundColor: NSColor.yellow]
                 )
                 parts.append(warningText)
             }
 
             // Gray count (in progress) - only show if > 0
-            if currentStatus.inProgress > 0 {
+            if status.inProgress > 0 {
                 let inProgressText = NSAttributedString(
-                    string: "\(currentStatus.inProgress)",
+                    string: "\(status.inProgress)",
                     attributes: [.foregroundColor: NSColor.gray]
                 )
                 parts.append(inProgressText)
             }
 
             // Green count (success) - always show when connected with resources
-            if currentStatus.success > 0 {
+            if status.success > 0 {
                 let successText = NSAttributedString(
-                    string: "\(currentStatus.success)",
+                    string: "\(status.success)",
                     attributes: [.foregroundColor: NSColor.green]
                 )
                 parts.append(successText)
@@ -653,11 +696,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Build the text to show in the status menu item
-    private func buildStatusText() -> String {
+    private func buildStatusText(for status: ResourceStatus) -> String {
         let connectionText = currentConnectionState.displayText
 
         if currentConnectionState == .connected {
-            return "Status: \(connectionText) - \(currentStatus.summary)"
+            return "Status: \(connectionText) - \(status.summary)"
         } else {
             // Show retry countdown for disconnected states
             let nextRetry = developmentMode == .live ? tiltClient.nextRetryTime : devModeNextRetryTime
@@ -692,9 +735,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Only update if the countdown value has changed (reduces flickering)
         if currentCountdown != lastDisplayedCountdown {
             lastDisplayedCountdown = currentCountdown
+            let displayStatus = developmentMode == .live ? adjustedStatus : currentStatus
             if let menu = statusItem?.menu,
                let statusMenuItem = menu.item(withTag: 100) {
-                statusMenuItem.title = buildStatusText()
+                statusMenuItem.title = buildStatusText(for: displayStatus)
             }
         }
     }
@@ -787,7 +831,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Update the Recent Failures section in the menu
-    /// Uses in-place updates to avoid flickering
+    /// Only shows failures the user has not ignored.
+    /// Uses in-place updates to avoid flickering.
     private func updateFailuresInMenu() {
         guard let menu = statusItem?.menu else { return }
 
@@ -796,18 +841,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
+        let failures = visibleFailures
+
         // Tags for failure items: 1020 = header, 1021-1025 = items
         let headerTag = 1020
         let firstItemTag = 1021
 
-        if !currentFailures.isEmpty {
+        if !failures.isEmpty {
             // Show the separator
             if let separator = menu.item(withTag: 102) {
                 separator.isHidden = false
             }
 
             // Add or update header with count
-            let headerTitle = "Failures: \(currentFailures.count)"
+            let headerTitle = "Failures: \(failures.count)"
             if let existingHeader = menu.item(withTag: headerTag) {
                 existingHeader.title = headerTitle
             } else {
@@ -822,7 +869,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
 
             // Update or add each failure
-            for (index, failure) in currentFailures.enumerated() {
+            for (index, failure) in failures.enumerated() {
                 let itemTag = firstItemTag + index
                 let title = "  \(failure.resourceName) - \(failure.timeAgo)"
 
@@ -837,6 +884,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         }
                         if submenu.items.count > 1 {
                             submenu.items[1].representedObject = failure.resourceName
+                        }
+                        if submenu.items.count > 2 {
+                            submenu.items[2].representedObject = failure.resourceName
                         }
                     }
                 } else {
@@ -870,20 +920,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     triggerItem.representedObject = failure.resourceName
                     submenu.addItem(triggerItem)
 
+                    let ignoreItem = NSMenuItem(
+                        title: "Ignore Failure",
+                        action: #selector(ignoreFailedResource(_:)),
+                        keyEquivalent: ""
+                    )
+                    ignoreItem.target = self
+                    ignoreItem.representedObject = failure.resourceName
+                    submenu.addItem(ignoreItem)
+
                     failureItem.submenu = submenu
                     menu.insertItem(failureItem, at: failuresSectionIndex + 2 + index)
                 }
             }
 
             // Remove extra items if the list shrank
-            for index in min(currentFailures.count, 5)..<5 {
+            for index in min(failures.count, 5)..<5 {
                 let itemTag = firstItemTag + index
                 if let item = menu.item(withTag: itemTag) {
                     menu.removeItem(item)
                 }
             }
         } else {
-            // No failures, hide the separator and remove all items
+            // No visible failures, hide the separator and remove all items
             if let separator = menu.item(withTag: 102) {
                 separator.isHidden = true
             }
@@ -891,6 +950,119 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.removeItem(header)
             }
             for index in 0..<5 {
+                let itemTag = firstItemTag + index
+                if let item = menu.item(withTag: itemTag) {
+                    menu.removeItem(item)
+                }
+            }
+        }
+    }
+
+    /// Update the Ignored Failures section in the menu
+    /// Shows resources the user has chosen to ignore.
+    /// Uses in-place updates to avoid flickering.
+    private func updateIgnoredInMenu() {
+        guard let menu = statusItem?.menu else { return }
+
+        // Find the ignored section separator (tag 104)
+        guard let ignoredSectionIndex = menu.items.firstIndex(where: { $0.tag == 104 }) else {
+            return
+        }
+
+        let ignored = ignoredFailures
+
+        // Tags for ignored items: 1040 = header, 1041-1045 = items
+        let headerTag = 1040
+        let firstItemTag = 1041
+        let maxItems = 5
+
+        if !ignored.isEmpty {
+            // Show the separator
+            if let separator = menu.item(withTag: 104) {
+                separator.isHidden = false
+            }
+
+            // Add or update header with count
+            let headerTitle = "Ignored: \(ignored.count)"
+            if let existingHeader = menu.item(withTag: headerTag) {
+                existingHeader.title = headerTitle
+            } else {
+                let header = NSMenuItem(
+                    title: headerTitle,
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                header.isEnabled = false
+                header.tag = headerTag
+                menu.insertItem(header, at: ignoredSectionIndex + 1)
+            }
+
+            // Update or add each ignored resource
+            for (index, failure) in ignored.prefix(maxItems).enumerated() {
+                let itemTag = firstItemTag + index
+                let title = "  \(failure.resourceName) - \(failure.timeAgo)"
+
+                if let existingItem = menu.item(withTag: itemTag) {
+                    existingItem.title = title
+                    existingItem.representedObject = failure
+                    if let submenu = existingItem.submenu {
+                        if let openItem = submenu.items.first {
+                            openItem.representedObject = failure
+                        }
+                        if submenu.items.count > 1 {
+                            submenu.items[1].representedObject = failure.resourceName
+                        }
+                    }
+                } else {
+                    let ignoredItem = NSMenuItem(
+                        title: title,
+                        action: nil,
+                        keyEquivalent: ""
+                    )
+                    ignoredItem.tag = itemTag
+                    ignoredItem.representedObject = failure
+
+                    let submenu = NSMenu()
+
+                    let openItem = NSMenuItem(
+                        title: "Open in Browser",
+                        action: #selector(openFailureInBrowser(_:)),
+                        keyEquivalent: ""
+                    )
+                    openItem.target = self
+                    openItem.representedObject = failure
+                    submenu.addItem(openItem)
+
+                    let unignoreItem = NSMenuItem(
+                        title: "Unignore",
+                        action: #selector(unignoreFailedResource(_:)),
+                        keyEquivalent: ""
+                    )
+                    unignoreItem.target = self
+                    unignoreItem.representedObject = failure.resourceName
+                    submenu.addItem(unignoreItem)
+
+                    ignoredItem.submenu = submenu
+                    menu.insertItem(ignoredItem, at: ignoredSectionIndex + 2 + index)
+                }
+            }
+
+            // Remove extra items if the list shrank
+            for index in min(ignored.count, maxItems)..<maxItems {
+                let itemTag = firstItemTag + index
+                if let item = menu.item(withTag: itemTag) {
+                    menu.removeItem(item)
+                }
+            }
+        } else {
+            // No ignored resources, hide the separator and remove all items
+            if let separator = menu.item(withTag: 104) {
+                separator.isHidden = true
+            }
+            if let header = menu.item(withTag: headerTag) {
+                menu.removeItem(header)
+            }
+            for index in 0..<maxItems {
                 let itemTag = firstItemTag + index
                 if let item = menu.item(withTag: itemTag) {
                     menu.removeItem(item)
@@ -1049,6 +1221,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let url = URL(string: pending.webURL) {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    @objc private func ignoreFailedResource(_ sender: NSMenuItem) {
+        guard let resourceName = sender.representedObject as? String else { return }
+        ignoredResourcesStore.ignore(resourceName)
+        updateFailuresInMenu()
+        updateIgnoredInMenu()
+        updateDisplay()
+    }
+
+    @objc private func unignoreFailedResource(_ sender: NSMenuItem) {
+        guard let resourceName = sender.representedObject as? String else { return }
+        ignoredResourcesStore.unignore(resourceName)
+        updateFailuresInMenu()
+        updateIgnoredInMenu()
+        updateDisplay()
     }
 
     // MARK: - Development Mode Actions
