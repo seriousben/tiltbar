@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/seriousben/tiltbar/compare/v1.5.2...v1.6.0) (2026-03-05)
+
+
+### Features
+
+* allow ignoring failed resources ([d1ca986](https://github.com/seriousben/tiltbar/commit/d1ca9869d98edbee610f1419467ba613ff9d38ba))
+
 ## [1.5.2](https://github.com/seriousben/tiltbar/compare/v1.5.1...v1.5.2) (2026-02-23)
 
 
