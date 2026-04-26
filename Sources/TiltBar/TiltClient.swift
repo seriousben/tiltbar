@@ -96,9 +96,21 @@ class TiltClient {
 
     // MARK: - Initialization
 
-    init(tiltPath: String = "/opt/homebrew/bin/tilt") {
+    /// Port for the Tilt HTTP server
+    private(set) var port: Int
+
+    init(tiltPath: String = "/opt/homebrew/bin/tilt", port: Int = 10350) {
         self.tiltPath = tiltPath
+        self.port = port
         self.currentRetryDelay = initialRetryDelay
+    }
+
+    /// Update the port and reconnect to the new tilt instance
+    func updatePort(_ newPort: Int) {
+        guard newPort != port else { return }
+        tiltLog("Switching to port \(newPort)")
+        port = newPort
+        reconnectNow()
     }
 
     // MARK: - Public API
@@ -147,11 +159,11 @@ class TiltClient {
     /// Trigger an update/rebuild for a specific resource.
     /// Runs on a GCD queue to avoid blocking the Swift cooperative thread pool.
     func triggerUpdate(resourceName: String) {
-        DispatchQueue.global().async { [tiltPath] in
+        DispatchQueue.global().async { [tiltPath, port] in
             do {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: tiltPath)
-                process.arguments = ["trigger", resourceName]
+                process.arguments = ["trigger", "--port", "\(port)", resourceName]
 
                 let pipe = Pipe()
                 process.standardOutput = pipe
@@ -190,7 +202,7 @@ class TiltClient {
         do {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: tiltPath)
-            process.arguments = ["dump", "engine"]
+            process.arguments = ["dump", "engine", "--port", "\(port)"]
 
             let pipe = Pipe()
             process.standardOutput = pipe
@@ -380,7 +392,7 @@ class TiltClient {
         // Create a new process
         let newProcess = Process()
         newProcess.executableURL = URL(fileURLWithPath: tiltPath)
-        newProcess.arguments = ["get", "uiresource", "-w", "-o", "json"]
+        newProcess.arguments = ["get", "uiresource", "-w", "-o", "json", "--port", "\(port)"]
 
         // Create pipes
         let stdoutPipe = Pipe()

@@ -302,3 +302,43 @@ enum ResourceStatusType {
     case error
     case unknown
 }
+
+// MARK: - Instance Info
+
+/// Tracks state for a single Tilt instance.
+/// Each instance gets its own TiltClient and independent status tracking.
+class InstanceInfo {
+    let name: String
+    let port: Int
+    let tiltClient: TiltClient
+    var status: ResourceStatus = ResourceStatus()
+    var connectionState: ConnectionState = .disconnected
+    var failures: [FailureInfo] = []
+    var inProgress: [InProgressInfo] = []
+    var pendingResources: [PendingResourceInfo] = []
+    /// Set when connection state transitions away from .connected, cleared on reconnect
+    var disconnectedSince: Date?
+
+    init(name: String, port: Int) {
+        self.name = name
+        self.port = port
+        self.tiltClient = TiltClient(port: port)
+    }
+
+    /// Human-readable disconnect duration, or nil if connected
+    var disconnectDuration: String? {
+        guard let since = disconnectedSince else { return nil }
+        let interval = Date().timeIntervalSince(since)
+        if interval < 60 {
+            return "\(Int(interval))s"
+        } else if interval < 3600 {
+            return "\(Int(interval / 60))m"
+        } else if interval < 86400 {
+            let h = Int(interval / 3600)
+            let m = Int((interval.truncatingRemainder(dividingBy: 3600)) / 60)
+            return "\(h)h \(m)m"
+        } else {
+            return "\(Int(interval / 86400))d"
+        }
+    }
+}
