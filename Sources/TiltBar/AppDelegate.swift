@@ -36,8 +36,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// We keep a strong reference to prevent it from being deallocated
     private var statusItem: NSStatusItem?
 
-    /// The Tilt API client
-    private let tiltClient = TiltClient()
+    /// All tracked Tilt instances (name → info)
+    private var instances: [String: InstanceInfo] = [:]
+
+    /// Convenience accessor for the active instance
+    private var activeInstance: InstanceInfo? {
+        guard let name = activeInstanceName else { return nil }
+        return instances[name]
+    }
+
+    /// Currently active instance name (nil if none selected)
+    private var activeInstanceName: String?
 
     /// Persisted set of resource names the user has chosen to ignore
     private let ignoredResourcesStore = IgnoredResourcesStore()
@@ -53,8 +62,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Current list of in-progress resources
     private var currentInProgress: [InProgressInfo] = []
-
-
 
     /// Current list of pending resources (not actively building)
     private var currentPendingResources: [PendingResourceInfo] = []
@@ -144,29 +151,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Create and set the menu
         setupMenu()
 
-        // Set up Tilt client callbacks
-        tiltClient.onStatusUpdate = { [weak self] status in
-            self?.handleStatusUpdate(status)
-        }
+        // Start observing distributed notifications from external tools
+        startInstanceNotificationObserver()
 
-        tiltClient.onConnectionStateChange = { [weak self] state in
-            self?.handleConnectionStateChange(state)
-        }
-
-        tiltClient.onFailuresUpdate = { [weak self] failures in
-            self?.handleFailuresUpdate(failures)
-        }
-
-        tiltClient.onInProgressUpdate = { [weak self] inProgress in
-            self?.handleInProgressUpdate(inProgress)
-        }
-
-        tiltClient.onPendingResourcesUpdate = { [weak self] pendingResources in
-            self?.handlePendingResourcesUpdate(pendingResources)
-        }
-
-        // Start watching Tilt
-        tiltClient.start()
+        // Create the default instance and start watching
+        addInstance(name: "default", port: 10350)
     }
 
     /// Load Tilt icons from the Resources directory
@@ -237,7 +226,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // Clean up when the app is closing
-        tiltClient.stop()
+        instances.values.forEach { $0.tiltClient.stop() }
     }
 
     // MARK: - Menu Setup
@@ -254,6 +243,56 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusMenuItem.isEnabled = false
         statusMenuItem.tag = 100 // Tag to find it later
         menu.addItem(statusMenuItem)
+
+        // Instances section (only shown when 2+ instances)
+        if instances.count > 1 {
+            menu.addItem(NSMenuItem.separator())
+            for name in instances.keys.sorted() {
+                guard let instance = instances[name] else { continue }
+                let summary = instanceStatusSummary(instance)
+                let item = NSMenuItem(
+                    title: "[\(name)] \(summary)",
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                if name == activeInstanceName {
+                    item.state = .on
+                }
+
+                let submenu = NSMenu()
+                if name != activeInstanceName {
+                    let switchItem = NSMenuItem(
+                        title: "Switch to",
+                        action: #selector(switchToInstance(_:)),
+                        keyEquivalent: ""
+                    )
+                    switchItem.target = self
+                    switchItem.representedObject = name
+                    submenu.addItem(switchItem)
+                }
+                let openItem = NSMenuItem(
+                    title: "Open in Browser",
+                    action: #selector(openInstanceInBrowser(_:)),
+                    keyEquivalent: ""
+                )
+                openItem.target = self
+                openItem.representedObject = instance.port
+                submenu.addItem(openItem)
+                if name != "default" {
+                    submenu.addItem(NSMenuItem.separator())
+                    let removeItem = NSMenuItem(
+                        title: "Remove",
+                        action: #selector(removeInstanceAction(_:)),
+                        keyEquivalent: ""
+                    )
+                    removeItem.target = self
+                    removeItem.representedObject = name
+                    submenu.addItem(removeItem)
+                }
+                item.submenu = submenu
+                menu.addItem(item)
+            }
+        }
 
         // Failures section (populated dynamically)
         // Tag 102 marks the start of the failures section
@@ -488,54 +527,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - Status Updates
-
-    private func handleStatusUpdate(_ status: ResourceStatus) {
-        // Ignore live updates when in development mode
-        if developmentMode == .live {
-            currentStatus = status
-            updateDisplay()
-        }
-    }
-
-    private func handleConnectionStateChange(_ state: ConnectionState) {
-        // Ignore live updates when in development mode
-        if developmentMode == .live {
-            currentConnectionState = state
-            updateDisplay()
-        }
-    }
-
-    private func handleFailuresUpdate(_ failures: [FailureInfo]) {
-        // Ignore live updates when in development mode
-        if developmentMode == .live {
-            currentFailures = failures
-
-            // Auto-remove ignored entries for resources that have recovered
-            let currentFailureNames = Set(failures.map { $0.resourceName })
-            ignoredResourcesStore.removeRecovered(currentFailureNames: currentFailureNames)
-
-            updateFailuresInMenu()
-            updateIgnoredInMenu()
-            // Refresh display since adjusted error count may have changed
-            updateDisplay()
-        }
-    }
-
-    private func handleInProgressUpdate(_ inProgress: [InProgressInfo]) {
-        // Ignore live updates when in development mode
-        if developmentMode == .live {
-            currentInProgress = inProgress
-            updateInProgressInMenu()
-        }
-    }
-
-    private func handlePendingResourcesUpdate(_ pendingResources: [PendingResourceInfo]) {
-        // Ignore live updates when in development mode
-        if developmentMode == .live {
-            currentPendingResources = pendingResources
-            updatePendingResourcesInMenu()
-        }
-    }
+    // Per-instance status tracking is handled by wireCallbacks(for:).
+    // The current* properties reflect the active instance and drive the UI.
 
     /// Animates the icon transition with a smooth fade effect
     private func setIconWithAnimation(_ newIcon: NSImage?, button: NSStatusBarButton) {
@@ -629,6 +622,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Add leading space for padding
         result.append(NSAttributedString(string: " "))
 
+        // Show active instance name only when multiple instances
+        if instances.count > 1, let name = activeInstanceName {
+            result.append(NSAttributedString(
+                string: "\(name) ",
+                attributes: [.foregroundColor: NSColor.secondaryLabelColor]
+            ))
+        }
+
         switch currentConnectionState {
         case .disconnected, .connecting, .serverDown:
             // All non-connected states: just show gray icon, no text/numbers
@@ -698,12 +699,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Build the text to show in the status menu item
     private func buildStatusText(for status: ResourceStatus) -> String {
         let connectionText = currentConnectionState.displayText
+        let prefix: String
+        if instances.count > 1, let name = activeInstanceName {
+            prefix = "[\(name)] localhost:\(activeInstance?.port ?? 10350) - "
+        } else {
+            prefix = ""
+        }
 
         if currentConnectionState == .connected {
-            return "Status: \(connectionText) - \(status.summary)"
+            return "\(prefix)Status: \(connectionText) - \(currentStatus.summary)"
         } else {
             // Show retry countdown for disconnected states
-            let nextRetry = developmentMode == .live ? tiltClient.nextRetryTime : devModeNextRetryTime
+            let nextRetry = developmentMode == .live ? activeInstance?.tiltClient.nextRetryTime : devModeNextRetryTime
             if let nextRetry = nextRetry {
                 let secondsUntilRetry = max(0, Int(nextRetry.timeIntervalSinceNow))
                 return "Status: \(connectionText) - Retry in \(secondsUntilRetry)s"
@@ -729,7 +736,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         // Get the current countdown value
-        let nextRetry = developmentMode == .live ? tiltClient.nextRetryTime : devModeNextRetryTime
+        let nextRetry = developmentMode == .live ? activeInstance?.tiltClient.nextRetryTime : devModeNextRetryTime
         let currentCountdown = nextRetry.map { max(0, Int($0.timeIntervalSinceNow)) }
 
         // Only update if the countdown value has changed (reduces flickering)
@@ -1158,9 +1165,198 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Menu Actions
 
+    // MARK: - Instance Management (via DistributedNotificationCenter)
+
+    private static let notifPrefix = "com.tilt.statusbar"
+
+    private func startInstanceNotificationObserver() {
+        let dnc = DistributedNotificationCenter.default()
+        let actions = ["register", "unregister", "activate"]
+        for action in actions {
+            dnc.addObserver(
+                self,
+                selector: #selector(handleInstanceNotification(_:)),
+                name: NSNotification.Name("\(Self.notifPrefix).\(action)"),
+                object: nil
+            )
+        }
+    }
+
+    @objc private func handleInstanceNotification(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let name = userInfo["name"] as? String else { return }
+        let port = userInfo["port"] as? Int ?? 0
+        let action = notification.name.rawValue.replacingOccurrences(of: "\(Self.notifPrefix).", with: "")
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            switch action {
+            case "register":
+                self.addInstance(name: name, port: port)
+            case "unregister":
+                self.removeInstance(name: name)
+            case "activate":
+                if self.instances[name] == nil && port > 0 {
+                    self.addInstance(name: name, port: port)
+                }
+                self.activateInstance(name: name)
+                self.rebuildMenu()
+            default:
+                break
+            }
+        }
+    }
+
+    /// Wire TiltClient callbacks for an instance to update per-instance and active state
+    private func wireCallbacks(for instance: InstanceInfo) {
+        instance.tiltClient.onStatusUpdate = { [weak self, weak instance] status in
+            guard let self = self, let instance = instance else { return }
+            instance.status = status
+            if instance.name == self.activeInstanceName && self.developmentMode == .live {
+                self.currentStatus = status
+                self.updateDisplay()
+            }
+        }
+        instance.tiltClient.onConnectionStateChange = { [weak self, weak instance] state in
+            guard let self = self, let instance = instance else { return }
+            instance.connectionState = state
+            if state != .connected && instance.disconnectedSince == nil {
+                instance.disconnectedSince = Date()
+            } else if state == .connected {
+                instance.disconnectedSince = nil
+            }
+            if instance.name == self.activeInstanceName && self.developmentMode == .live {
+                self.currentConnectionState = state
+            }
+            // Rebuild menu to refresh instance status summaries,
+            // then repopulate dynamic sections and display
+            self.rebuildMenu()
+        }
+        instance.tiltClient.onFailuresUpdate = { [weak self, weak instance] failures in
+            guard let self = self, let instance = instance else { return }
+            instance.failures = failures
+            if instance.name == self.activeInstanceName && self.developmentMode == .live {
+                self.currentFailures = failures
+                self.updateFailuresInMenu()
+            }
+        }
+        instance.tiltClient.onInProgressUpdate = { [weak self, weak instance] inProgress in
+            guard let self = self, let instance = instance else { return }
+            instance.inProgress = inProgress
+            if instance.name == self.activeInstanceName && self.developmentMode == .live {
+                self.currentInProgress = inProgress
+                self.updateInProgressInMenu()
+            }
+        }
+        instance.tiltClient.onPendingResourcesUpdate = { [weak self, weak instance] pendingResources in
+            guard let self = self, let instance = instance else { return }
+            instance.pendingResources = pendingResources
+            if instance.name == self.activeInstanceName && self.developmentMode == .live {
+                self.currentPendingResources = pendingResources
+                self.updatePendingResourcesInMenu()
+            }
+        }
+    }
+
+    /// Create and register a new instance, or return existing if port matches
+    @discardableResult
+    func addInstance(name: String, port: Int) -> InstanceInfo {
+        if let existing = instances[name] {
+            if existing.port == port { return existing }
+            // Port changed, stop old and recreate
+            existing.tiltClient.stop()
+        }
+        let instance = InstanceInfo(name: name, port: port)
+        instances[name] = instance
+        wireCallbacks(for: instance)
+        instance.tiltClient.start()
+        let needsActivation = activeInstanceName == nil || activeInstanceName == name
+        if needsActivation {
+            activateInstance(name: name)
+        }
+        rebuildMenu()
+        return instance
+    }
+
+    /// Remove an instance (cannot remove "default")
+    func removeInstance(name: String) {
+        guard name != "default" else { return }
+        guard let instance = instances[name] else { return }
+        instance.tiltClient.stop()
+        instances.removeValue(forKey: name)
+        if activeInstanceName == name {
+            let nextName = instances["default"] != nil ? "default" : instances.keys.sorted().first
+            if let nextName = nextName {
+                activateInstance(name: nextName)
+            } else {
+                activeInstanceName = nil
+            }
+        }
+        rebuildMenu()
+    }
+
+    /// Switch the active instance and sync its cached state to the display
+    func activateInstance(name: String) {
+        guard let instance = instances[name] else { return }
+        activeInstanceName = name
+        currentStatus = instance.status
+        currentConnectionState = instance.connectionState
+        currentFailures = instance.failures
+        currentInProgress = instance.inProgress
+        currentPendingResources = instance.pendingResources
+        updateDisplay()
+        updateFailuresInMenu()
+        updateInProgressInMenu()
+        updatePendingResourcesInMenu()
+    }
+
+    /// Rebuild the menu and repopulate all dynamic sections.
+    /// Use this instead of bare setupMenu() to avoid losing dynamic content.
+    private func rebuildMenu() {
+        setupMenu()
+        updateDisplay()
+        updateFailuresInMenu()
+        updateInProgressInMenu()
+        updatePendingResourcesInMenu()
+    }
+
+    /// Build a compact status summary for an instance (used in menu)
+    private func instanceStatusSummary(_ instance: InstanceInfo) -> String {
+        if instance.connectionState != .connected {
+            let duration = instance.disconnectDuration.map { " (\($0))" } ?? ""
+            return "Disconnected\(duration)"
+        }
+        let s = instance.status
+        if s.total == 0 { return "No resources" }
+        var parts: [String] = []
+        if s.error > 0 { parts.append("🔴\(s.error)") }
+        if s.warning > 0 { parts.append("🟡\(s.warning)") }
+        if s.inProgress > 0 { parts.append("⚪\(s.inProgress)") }
+        if s.success > 0 { parts.append("🟢\(s.success)") }
+        return parts.joined(separator: " ")
+    }
+
+    @objc private func switchToInstance(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        activateInstance(name: name)
+        rebuildMenu()
+    }
+
+    @objc private func openInstanceInBrowser(_ sender: NSMenuItem) {
+        guard let port = sender.representedObject as? Int else { return }
+        if let url = URL(string: "http://localhost:\(port)") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func removeInstanceAction(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        removeInstance(name: name)
+    }
+
     @objc private func openInBrowser() {
-        // Open the default browser to the Tilt URL
-        if let url = URL(string: "http://localhost:10350") {
+        let port = activeInstance?.port ?? 10350
+        if let url = URL(string: "http://localhost:\(port)") {
             NSWorkspace.shared.open(url)
         }
     }
@@ -1173,7 +1369,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func reconnectNow() {
-        tiltClient.reconnectNow()
+        activeInstance?.tiltClient.reconnectNow()
     }
 
     @objc private func quit() {
@@ -1205,13 +1401,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func triggerResourceUpdate(_ sender: NSMenuItem) {
-        // Get the resource name from the menu item
         guard let resourceName = sender.representedObject as? String else {
             return
         }
-
-        // Trigger the update via TiltClient
-        tiltClient.triggerUpdate(resourceName: resourceName)
+        activeInstance?.tiltClient.triggerUpdate(resourceName: resourceName)
     }
 
     @objc private func openPendingResourceInBrowser(_ sender: NSMenuItem) {
@@ -1290,11 +1483,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch developmentMode {
         case .live:
             // Return to live mode - clear dev mode state and let TiltClient handle everything
-            devModeNextRetryTime = nil  // Clear dev mode retry time
-            // Don't manually set currentConnectionState or currentStatus here
-            // Let the TiltClient's callbacks handle it via handleStatusUpdate/handleConnectionStateChange
-            tiltClient.reconnectNow()
-            // The reconnectNow will trigger connection state updates through the normal callbacks
+            devModeNextRetryTime = nil
+            activeInstance?.tiltClient.reconnectNow()
             break
 
         case .allSuccess:
