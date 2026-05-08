@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/seriousben/tiltbar/compare/v1.6.0...v1.7.0) (2026-05-08)
+
+
+### Features
+
+* support multiple instances ([2cfbb04](https://github.com/seriousben/tiltbar/commit/2cfbb04a31dd3392f81448b2c60d994c90d8d8a9))
+
 ## [1.6.0](https://github.com/seriousben/tiltbar/compare/v1.5.2...v1.6.0) (2026-03-05)
 
 
