@@ -51,6 +51,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Persisted set of resource names the user has chosen to ignore
     private let ignoredResourcesStore = IgnoredResourcesStore()
 
+    /// User-configurable colors for status bar counts and yellow icon tint
+    private let colorPrefs = ColorPreferencesStore()
+
+    /// Lazily-built Preferences window
+    private var preferencesWindowController: PreferencesWindowController?
+
     /// Current resource status (for display)
     private var currentStatus = ResourceStatus()
 
@@ -154,8 +160,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Start observing distributed notifications from external tools
         startInstanceNotificationObserver()
 
+        // React to color preference changes (regenerate yellow icon, redraw status bar)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(colorPreferencesChanged),
+            name: .colorPreferencesDidChange,
+            object: nil
+        )
+
         // Create the default instance and start watching
         addInstance(name: "default", port: 10350)
+    }
+
+    @objc private func colorPreferencesChanged() {
+        regenerateYellowIcon()
+        if currentIcon === yellowIcon {
+            statusItem?.button?.image = yellowIcon
+        }
+        updateDisplay()
+    }
+
+    private func regenerateYellowIcon() {
+        guard let green = greenIcon else { return }
+        let tinted = tintImage(green, with: colorPrefs.color(for: .warning))
+        tinted.isTemplate = false
+        tinted.size = NSSize(width: 18, height: 18)
+        yellowIcon = tinted
     }
 
     /// Load Tilt icons from the Resources directory
@@ -189,9 +219,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         greenIcon = NSImage(contentsOfFile: greenPath)
         redIcon = NSImage(contentsOfFile: redPath)
 
-        // Create yellow icon by tinting the green icon
+        // Create yellow icon by tinting the green icon with the configured warning color
         if let green = greenIcon {
-            yellowIcon = tintImage(green, with: NSColor.yellow)
+            yellowIcon = tintImage(green, with: colorPrefs.color(for: .warning))
         }
 
         // Set images to template rendering mode for better menu bar integration
@@ -444,6 +474,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Preferences
+        let prefsMenuItem = NSMenuItem(
+            title: "Preferences…",
+            action: #selector(openPreferences),
+            keyEquivalent: ","
+        )
+        prefsMenuItem.target = self
+        menu.addItem(prefsMenuItem)
+
         // Quit
         let quitMenuItem = NSMenuItem(
             title: "Quit",
@@ -648,40 +687,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Build format with colored numbers
             var parts: [NSAttributedString] = []
 
-            // Red count (errors) - only show if > 0
             if status.error > 0 {
-                let errorText = NSAttributedString(
+                parts.append(NSAttributedString(
                     string: "\(status.error)",
-                    attributes: [.foregroundColor: NSColor.red]
-                )
-                parts.append(errorText)
+                    attributes: [.foregroundColor: colorPrefs.color(for: .error)]
+                ))
             }
 
-            // Yellow count (warnings) - only show if > 0
             if status.warning > 0 {
-                let warningText = NSAttributedString(
+                parts.append(NSAttributedString(
                     string: "\(status.warning)",
-                    attributes: [.foregroundColor: NSColor.yellow]
-                )
-                parts.append(warningText)
+                    attributes: [.foregroundColor: colorPrefs.color(for: .warning)]
+                ))
             }
 
-            // Gray count (in progress) - only show if > 0
             if status.inProgress > 0 {
-                let inProgressText = NSAttributedString(
+                parts.append(NSAttributedString(
                     string: "\(status.inProgress)",
-                    attributes: [.foregroundColor: NSColor.gray]
-                )
-                parts.append(inProgressText)
+                    attributes: [.foregroundColor: colorPrefs.color(for: .inProgress)]
+                ))
             }
 
-            // Green count (success) - always show when connected with resources
             if status.success > 0 {
-                let successText = NSAttributedString(
+                parts.append(NSAttributedString(
                     string: "\(status.success)",
-                    attributes: [.foregroundColor: NSColor.green]
-                )
-                parts.append(successText)
+                    attributes: [.foregroundColor: colorPrefs.color(for: .success)]
+                ))
             }
 
             // Join parts with spaces
@@ -1374,6 +1405,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func quit() {
         NSApplication.shared.terminate(nil)
+    }
+
+    @objc private func openPreferences() {
+        if preferencesWindowController == nil {
+            preferencesWindowController = PreferencesWindowController(store: colorPrefs)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        preferencesWindowController?.showWindow(nil)
+        preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func openFailureInBrowser(_ sender: NSMenuItem) {
