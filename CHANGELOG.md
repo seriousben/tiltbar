@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/seriousben/tiltbar/compare/v1.7.0...v1.8.0) (2026-05-12)
+
+
+### Features
+
+* color prefs ([cfb1bed](https://github.com/seriousben/tiltbar/commit/cfb1bed72c24288394116457a286a6059a6b7fac))
+
 ## [1.7.0](https://github.com/seriousben/tiltbar/compare/v1.6.0...v1.7.0) (2026-05-08)
 
 
